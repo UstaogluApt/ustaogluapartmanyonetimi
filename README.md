@@ -1,0 +1,2 @@
+# ustaogluapartmanyonetimi
+ustaogluapartmanyonetimi
