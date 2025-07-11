@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Apartman Yönetim Paneli</title>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+
+
+<link href="style.css" rel="stylesheet"/></head>
+<body>
+<div class="main-content">
+<div class="sidebar">
+<button class="nav-item active" onclick="showPage('dashboard')">📊 Dashboard</button>
+<button class="nav-item" onclick="showPage('residents')">👥 Residents</button>
+<button class="nav-item" onclick="showPage('income')">💰 Income</button>
+<button class="nav-item" onclick="showPage('expenses')">💸 Expenses</button>
+<button class="nav-item" onclick="showPage('reports')">📈 Reports</button>
+</div>
+<div class="content-area">
+<!-- Dashboard Page -->
+<div class="page active" id="dashboard">
+<h2>Dashboard Overview</h2>
+<div class="metrics-grid">
+<div class="metric-card">
+<h3 id="totalResidents">0</h3>
+<p>Total Residents</p>
+</div>
+<div class="metric-card">
+<h3 id="monthlyIncome">$0</h3>
+<p>Monthly Income</p>
+</div>
+<div class="metric-card">
+<h3 id="monthlyExpenses">$0</h3>
+<p>Monthly Expenses</p>
+</div>
+<div class="metric-card">
+<h3 id="netIncome">$0</h3>
+<p>Net Income</p>
+</div>
+</div>
+<!-- Announcements Section -->
+<div class="announcements-section">
+<div class="section-header">
+<h3>📢 Announcements</h3>
+<button class="btn" onclick="openModal('announcementModal')">➕ Add Announcement</button>
+</div>
+<div class="announcements-list" id="announcementsList">
+<!-- Announcements will be loaded here -->
+</div>
+</div>
+<div class="recent-entries">
+<div class="entry-list">
+<h3>Recent Income</h3>
+<div id="recentIncome"></div>
+</div>
+<div class="entry-list">
+<h3>Recent Expenses</h3>
+<div id="recentExpenses"></div>
+</div>
+</div>
+</div>
+<!-- Residents Page -->
+<div class="page" id="residents">
+<h2>Residents Management</h2>
+<button class="btn" onclick="openModal('residentModal')">➕ Add Resident</button>
+<div class="table-container">
+<table id="residentsTable">
+<thead>
+<tr>
+<th>Flat No</th>
+<th>Full Name</th>
+<th>Phone</th>
+<th>Email</th>
+<th>Status</th>
+<th>License Plate</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+<!-- Income Page -->
+<div class="page" id="income">
+<h2>Income Management - Dues &amp; Extra Payments</h2>
+<div class="income-sections">
+<!-- A. Dues Configuration Section -->
+<div class="section-card">
+<h3>⚙️ Dues Configuration</h3>
+<p style="margin-bottom: 20px; color: #666;">Set monthly due amounts for each flat. This will be used for payment comparisons and reports.</p>
+<div class="dues-config-form">
+<div class="form-row">
+<div class="form-group">
+<label>Select Flat</label>
+<select id="configFlatSelect">
+<option value="">Select Flat</option>
+</select>
+</div>
+<div class="form-group">
+<label>Monthly Due Amount ($)</label>
+<input id="configDueAmount" placeholder="Enter amount" step="0.01" type="number"/>
+</div>
+</div>
+<button class="btn" onclick="saveDuesConfig()">💾 Save Configuration</button>
+</div>
+<div class="table-container">
+<table id="duesConfigTable">
+<thead>
+<tr>
+<th>Flat No</th>
+<th>Full Name</th>
+<th>Monthly Due Amount</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+<!-- B. Payment Entry Section -->
+<div class="section-card">
+<h3>💳 Payment Entry</h3>
+<button class="btn" onclick="openModal('paymentModal')">➕ Record Payment</button>
+<div class="table-container">
+<table id="paymentsTable">
+<thead>
+<tr>
+<th>Payer</th>
+<th>Flat No</th>
+<th>Payment Date</th>
+<th>Payment Type</th>
+<th>Month/Year</th>
+<th>Amount Paid</th>
+<th>Status</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+<!-- Expenses Page -->
+<div class="page" id="expenses">
+<h2>Expenses Management</h2>
+<button class="btn" onclick="openModal('expenseModal')">➕ Add Expense</button>
+<div class="table-container">
+<table id="expensesTable">
+<thead>
+<tr>
+<th>Category</th>
+<th>Description</th>
+<th>Amount</th>
+<th>Payment Date</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+<!-- Reports Page -->
+<div class="page" id="reports">
+<h2>Reports &amp; Analytics</h2>
+<!-- Year Selection Controls -->
+<div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 30px;">
+<div class="form-group" style="margin-bottom: 0;">
+<label>📅 Select Year for Reports</label>
+<select id="reportYearSelect" onchange="updateReportsForYear()" style="max-width: 200px;">
+<option value="">Select Year</option>
+</select>
+</div>
+</div>
+<div class="reports-grid">
+<div class="report-section">
+<h3>Monthly Dues Payment Status</h3>
+<div style="margin-bottom: 15px;">
+<button class="btn" onclick="exportDuesReport()">📊 Export to CSV</button>
+<button class="btn btn-success" onclick="exportDuesReportExcel()">📗 Export to Excel</button>
+</div>
+<div id="duesReportMessage" style="text-align: center; padding: 20px; color: #666; display: none;">
+                            Please select a year to view the dues payment status report.
+                        </div>
+<div class="table-container" id="duesReportContainer" style="display: none;">
+<table id="duesReportTable">
+<thead id="duesReportHeader"></thead>
+<tbody id="duesReportBody"></tbody>
+</table>
+</div>
+</div>
+<div class="report-section">
+<h3>Monthly Expense Summary</h3>
+<div style="margin-bottom: 15px;">
+<button class="btn" onclick="exportExpenseReport()">📊 Export to CSV</button>
+<button class="btn btn-success" onclick="exportExpenseReportExcel()">📗 Export to Excel</button>
+</div>
+<div id="expenseReportMessage" style="text-align: center; padding: 20px; color: #666; display: none;">
+                            Please select a year to view the expense summary report.
+                        </div>
+<div class="table-container" id="expenseReportContainer" style="display: none;">
+<table id="expenseReportTable">
+<thead>
+<tr>
+<th>Month</th>
+<th>Total Expenses</th>
+<th>Number of Transactions</th>
+</tr>
+</thead>
+<tbody id="expenseReportBody"></tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- Resident Modal -->
+<div class="modal" id="residentModal">
+<div class="modal-content">
+<span class="close" onclick="closeModal('residentModal')">×</span>
+<h2 id="residentModalTitle">Add Resident</h2>
+<form id="residentForm">
+<div class="form-row">
+<div class="form-group">
+<label>Flat Number</label>
+<input id="flatNo" required="" type="text"/>
+</div>
+<div class="form-group">
+<label>Full Name</label>
+<input id="fullName" required="" type="text"/>
+</div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>Phone</label>
+<input id="phone" required="" type="tel"/>
+</div>
+<div class="form-group">
+<label>Email</label>
+<input id="email" required="" type="email"/>
+</div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>License Plate</label>
+<input id="licensePlate" placeholder="e.g., ABC-1234" type="text"/>
+</div>
+<div class="form-group">
+<label>Status</label>
+<select id="status" required="">
+<option value="">Select Status</option>
+<option value="Owner">Owner</option>
+<option value="Tenant">Tenant</option>
+</select>
+</div>
+</div>
+<button class="btn" type="submit">Save Resident</button>
+<button class="btn btn-danger" onclick="closeModal('residentModal')" type="button">Cancel</button>
+</form>
+</div>
+</div>
+<!-- Payment Modal -->
+<div class="modal" id="paymentModal">
+<div class="modal-content">
+<span class="close" onclick="closeModal('paymentModal')">×</span>
+<h2>Record Payment</h2>
+<form id="paymentForm">
+<div class="form-row">
+<div class="form-group">
+<label>Payer Name</label>
+<input id="payerName" required="" type="text"/>
+</div>
+<div class="form-group">
+<label>Flat Number</label>
+<select id="payerFlat" onchange="updateExpectedAmount()" required="">
+<option value="">Select Flat</option>
+</select>
+</div>
+</div>
+<div class="form-row">
+<div class="form-group">
+<label>Payment Date</label>
+<input id="paymentDate" required="" type="date"/>
+</div>
+<div class="form-group">
+<label>Payment Type</label>
+<select id="paymentType" onchange="toggleDuesFields()" required="">
+<option value="">Select Type</option>
+<option value="Due">Monthly Due</option>
+<option value="Extra">Extra Payment</option>
+</select>
+</div>
+</div>
+<div class="form-row" id="duesFields" style="display: none;">
+<div class="form-group">
+<label>Year</label>
+<select id="paymentYear" required=""></select>
+</div>
+<div class="form-group">
+<label>Month</label>
+<select id="paymentMonth" onchange="updateExpectedAmount()" required="">
+<option value="">Select Month</option>
+<option value="1">January</option>
+<option value="2">February</option>
+<option value="3">March</option>
+<option value="4">April</option>
+<option value="5">May</option>
+<option value="6">June</option>
+<option value="7">July</option>
+<option value="8">August</option>
+<option value="9">September</option>
+<option value="10">October</option>
+<option value="11">November</option>
+<option value="12">December</option>
+</select>
+</div>
+</div>
+<div class="form-group">
+<label>Amount Paid ($)</label>
+<input id="paymentAmount" required="" step="0.01" type="number"/>
+<div id="expectedAmountInfo" style="margin-top: 5px; font-size: 0.9rem; color: #666;"></div>
+</div>
+<button class="btn" type="submit">Submit Payment</button>
+<button class="btn btn-danger" onclick="closeModal('paymentModal')" type="button">Cancel</button>
+</form>
+</div>
+</div>
+<!-- Expense Modal -->
+<div class="modal" id="expenseModal">
+<div class="modal-content">
+<span class="close" onclick="closeModal('expenseModal')">×</span>
+<h2>Add Expense</h2>
+<form id="expenseForm">
+<div class="form-row">
+<div class="form-group">
+<label>Category</label>
+<select id="expenseCategory" required="">
+<option value="">Select Category</option>
+<option value="Cleaning">Cleaning</option>
+<option value="General Expense">General Expense</option>
+<option value="Utilities">Utilities</option>
+<option value="Cleaning Supplies">Cleaning Supplies</option>
+<option value="Maintenance">Maintenance</option>
+<option value="Security">Security</option>
+<option value="Insurance">Insurance</option>
+<option value="Other">Other</option>
+</select>
+</div>
+<div class="form-group">
+<label>Amount ($)</label>
+<input id="expenseAmount" required="" step="0.01" type="number"/>
+</div>
+</div>
+<div class="form-group">
+<label>Description</label>
+<textarea id="expenseDescription" required="" rows="3"></textarea>
+</div>
+<div class="form-group">
+<label>Payment Date</label>
+<input id="expenseDate" required="" type="date"/>
+</div>
+<button class="btn" type="submit">Add Expense</button>
+<button class="btn btn-danger" onclick="closeModal('expenseModal')" type="button">Cancel</button>
+</form>
+</div>
+</div>
+<!-- Announcement Modal -->
+<div class="modal" id="announcementModal">
+<div class="modal-content">
+<span class="close" onclick="closeModal('announcementModal')">×</span>
+<h2 id="announcementModalTitle">Add Announcement</h2>
+<form id="announcementForm">
+<div class="form-row">
+<div class="form-group">
+<label>📌 Title</label>
+<input id="announcementTitle" placeholder="Enter announcement title" required="" type="text"/>
+</div>
+<div class="form-group">
+<label>🎨 Type</label>
+<select id="announcementType" required="">
+<option value="">Select Type</option>
+<option value="info">📘 Info (Blue)</option>
+<option value="warning">⚠️ Warning (Yellow)</option>
+<option value="alert">🚨 Alert (Red)</option>
+</select>
+</div>
+</div>
+<div class="form-group">
+<label>📝 Message</label>
+<textarea id="announcementMessage" placeholder="Enter announcement message..." required="" rows="4"></textarea>
+</div>
+<div class="form-group">
+<label>🗓️ Date</label>
+<input id="announcementDate" required="" type="date"/>
+</div>
+<button class="btn" type="submit">Save Announcement</button>
+<button class="btn btn-danger" onclick="closeModal('announcementModal')" type="button">Cancel</button>
+</form>
+</div>
+</div>
+
+<script src="script.js"></script></body>
+</html>
