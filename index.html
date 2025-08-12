@@ -3,410 +3,195 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Apartman Yönetim Sistemi</title>
+  <title>Apartman Paneli</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css" />
-  <link rel="icon" href="favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.7/build/pdfmake.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.7/build/vfs_fonts.js"></script>
 </head>
 <body>
-
-  <!-- ===== Login View ===== -->
-  <div id="loginView" class="content">
-    <div class="layout" style="grid-template-columns:1fr">
-      <div class="content" style="max-width:480px;margin:10vh auto 0">
-        <div class="panel">
-          <div class="panel-head">
-            <h3>🔐 Yönetici Girişi</h3>
-          </div>
-          <form id="loginForm" class="form">
-            <label>
-              E-posta
-              <input id="loginEmail" type="email" required placeholder="admin@site.com" />
-            </label>
-            <label>
-              Parola
-              <input id="loginPassword" type="password" required placeholder="••••••••" />
-            </label>
-            <div id="loginError" class="error"></div>
-            <div class="modal-actions">
-              <button type="submit" class="btn primary">Giriş yap</button>
-            </div>
-          </form>
-          <div class="muted" style="margin-top:8px">
-            Not: Yönetici rolü Firestore <code>roles/{uid}</code> içinde tanımlanmalıdır.
-          </div>
-        </div>
-      </div>
+  <!-- LOGIN -->
+  <div id="loginView" class="content" style="min-height:100vh; display:block;">
+    <div class="panel" style="max-width:420px;margin:10vh auto 0">
+      <div class="panel-head"><h2>🔐 Admin Girişi</h2></div>
+      <form id="loginForm" class="form">
+        <label>E-posta<input type="email" id="loginEmail" required /></label>
+        <label>Şifre<input type="password" id="loginPassword" required /></label>
+        <div class="error" id="loginError"></div>
+        <button class="btn primary" style="width:100%">Giriş Yap</button>
+      </form>
     </div>
   </div>
 
-  <!-- ===== App View ===== -->
   <div id="appView" class="layout hidden">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="logo">🏢</div>
-        <div class="brand-text">
-          <h1>Apartman Yönetim</h1>
-          <p>Kapsamlı yönetim paneli</p>
-        </div>
-      </div>
-
-      <nav id="nav" class="nav">
+    <aside class="sidebar" id="nav">
+      <div class="brand"><div class="logo">🏢</div><div class="brand-text"><h1>Apartman Paneli</h1><p>Yönetim ve Takip</p></div></div>
+      <nav class="nav">
         <button id="btnDashboard" class="nav-btn active">📊 Ana Sayfa</button>
         <button id="btnResidents" class="nav-btn">👥 Sakinler</button>
         <button id="btnPayments" class="nav-btn">💳 Ödemeler</button>
         <button id="btnExpenses" class="nav-btn">💸 Giderler</button>
-        <button id="btnFees" class="nav-btn">⚙️ Aidat / Ayarlamalar</button>
-        <button id="btnReports" class="nav-btn">📈 Raporlar</button>
+        <button id="btnReports" class="nav-btn">📑 Raporlar</button>
+        <button id="btnFees" class="nav-btn admin-only hidden">⚙️ Aidat/Ayarlamalar</button>
       </nav>
-
-      <div class="sidebar-foot">© <span id="yearCopy"></span></div>
+      <div class="sidebar-foot"><small>© <span id="yearCopy"></span> Yönetim</small></div>
     </aside>
 
-    <!-- Main content -->
     <main class="content">
-      <div class="topbar">
-        <div id="userBox" class="user-box hidden">
-          <span id="userEmail" class="pill"></span>
-          <span id="userRole" class="pill pill-admin"></span>
-          <button id="btnLogout" class="btn outline">Çıkış</button>
-        </div>
+      <div class="topbar" id="userBox">
+        <span class="pill" id="userEmail"></span>
+        <span class="pill pill-admin" id="userRole">Kullanıcı</span>
+        <button id="btnLogout" class="btn outline">🚪 Çıkış</button>
       </div>
 
-      <!-- ===== Dashboard ===== -->
       <section id="dashboard">
         <div class="panel">
-          <div class="panel-head">
-            <h3>Genel Özet</h3>
-            <div class="row-gap">
-              <button id="addAnnouncement" class="btn primary admin-only">+ Duyuru</button>
-              <button id="setFee" class="btn outline admin-only">🧾 Aidatları Ayarla</button>
-            </div>
-          </div>
-          <div class="stats">
-            <!-- kartlar buraya gelecek -->
-            <div id="dashboardSummary" class="stats" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;width:100%"></div>
+          <div class="panel-head"><h2>📊 Genel Durum</h2></div>
+          <div class="stats" id="dashboardSummary"></div>
+        </div>
+        <div class="panel mt">
+          <div class="panel-head"><h3>👥 Yönetici Bilgileri</h3></div>
+          <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+            <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <h3 style="margin:0">🏢 Yönetici</h3><button class="btn small admin-only hidden role-edit" data-role="admin">✏️ Düzenle</button></div>
+              <p><strong>İsim:</strong> <span id="adminNameText">—</span></p><p><strong>Telefon:</strong> <span id="adminPhoneText">—</span></p></div>
+            <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <h3 style="margin:0">👨‍💼 Yardımcı</h3><button class="btn small admin-only hidden role-edit" data-role="assistant">✏️ Düzenle</button></div>
+              <p><strong>İsim:</strong> <span id="assistantNameText">—</span></p><p><strong>Telefon:</strong> <span id="assistantPhoneText">—</span></p></div>
+            <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <h3 style="margin:0">🔍 Denetmen</h3><button class="btn small admin-only hidden role-edit" data-role="supervisor">✏️ Düzenle</button></div>
+              <p><strong>İsim:</strong> <span id="supervisorNameText">—</span></p><p><strong>Telefon:</strong> <span id="supervisorPhoneText">—</span></p></div>
+            <div class="card"><h3>🕐 Güncel</h3><p><strong>Tarih:</strong> <span id="currentDateTR">—</span></p><p><strong>Saat:</strong> <span id="currentTimeTR">—</span></p></div>
           </div>
         </div>
-
-        <!-- Admin Info -->
         <div class="panel mt">
-          <div class="panel-head">
-            <h3>👥 Yönetici Bilgileri</h3>
-            <div class="row-gap">
-              <button class="btn small admin-only role-edit" data-role="admin">Yönetici Düzenle</button>
-              <button class="btn small admin-only role-edit" data-role="assistant">Yardımcı Düzenle</button>
-              <button class="btn small admin-only role-edit" data-role="supervisor">Denetmen Düzenle</button>
-            </div>
-          </div>
-          <div class="list">
-            <div>
-              <div><strong>Yönetici</strong></div>
-              <div class="meta">İsim: <span id="adminNameText">Not Set</span></div>
-              <div class="meta">Telefon: <span id="adminPhoneText">Not Set</span></div>
-            </div>
-            <div>
-              <div><strong>Yönetici Yardımcısı</strong></div>
-              <div class="meta">İsim: <span id="assistantNameText">Not Set</span></div>
-              <div class="meta">Telefon: <span id="assistantPhoneText">Not Set</span></div>
-            </div>
-            <div>
-              <div><strong>Denetmen</strong></div>
-              <div class="meta">İsim: <span id="supervisorNameText">Not Set</span></div>
-              <div class="meta">Telefon: <span id="supervisorPhoneText">Not Set</span></div>
-            </div>
-            <div>
-              <div><strong>Güncel Tarih / Saat</strong></div>
-              <div class="meta">Tarih: <span id="currentDateTR">—</span></div>
-              <div class="meta">Saat: <span id="currentTimeTR">—</span></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Announcements -->
-        <div class="panel mt">
-          <div class="panel-head">
-            <h3>📢 Duyurular</h3>
-          </div>
+          <div class="panel-head"><h3>📢 Duyurular</h3><button id="addAnnouncement" class="btn primary admin-only hidden">➕ Duyuru Ekle</button></div>
           <div id="announcementList" class="announce-list"></div>
         </div>
       </section>
 
-      <!-- ===== Residents ===== -->
       <section id="residents" class="hidden">
         <div class="panel">
-          <div class="panel-head">
-            <h3>Sakin Yönetimi</h3>
-            <button id="btnResidentAdd" class="btn primary admin-only">+ Sakin Ekle</button>
-          </div>
-          <div class="table-container">
-            <table class="tbl">
-              <thead>
-                <tr>
-                  <th>Daire</th>
-                  <th>Ad Soyad</th>
-                  <th>Telefon</th>
-                  <th>E-posta</th>
-                  <th>Durum</th>
-                  <th>Plaka</th>
-                  <th>İşlemler</th>
-                </tr>
-              </thead>
-              <tbody id="resTbody"></tbody>
-            </table>
-          </div>
+          <div class="panel-head"><h2>👥 Sakin Yönetimi</h2><button id="btnResidentAdd" class="btn primary admin-only hidden">➕ Sakin Ekle</button></div>
+          <div class="table-container"><table class="tbl" id="resTbl">
+            <thead><tr><th>Daire No</th><th>Ad Soyad</th><th>Telefon</th><th>E-posta</th><th>Durum</th><th>Plaka</th><th>İşlemler</th></tr></thead>
+            <tbody id="resTbody"></tbody></table></div>
         </div>
       </section>
 
-      <!-- ===== Payments ===== -->
       <section id="payments" class="hidden">
         <div class="panel">
-          <div class="panel-head">
-            <h3>Ödemeler</h3>
-            <div class="row-gap">
-              <button id="addPayment" class="btn primary admin-only">+ Ödeme Ekle</button>
-              <button id="exportPayments" class="btn outline">Dışa Aktar (JSON)</button>
-            </div>
+          <div class="panel-head"><h2>💳 Ödemeler</h2>
+            <div class="row-gap"><button id="addPayment" class="btn primary admin-only hidden">➕ Ödeme Ekle</button><button id="exportPayments" class="btn outline admin-only">⬇️ JSON Dışa Aktar</button></div>
           </div>
-          <div id="paymentList"></div>
+          <div id="paymentList" class="list"></div>
         </div>
       </section>
 
-      <!-- ===== Expenses ===== -->
       <section id="expenses" class="hidden">
         <div class="panel">
-          <div class="panel-head">
-            <h3>Giderler</h3>
-            <div class="row-gap">
-              <button id="addExpense" class="btn primary admin-only">+ Gider Ekle</button>
-              <button id="exportExpenses" class="btn outline">Dışa Aktar (JSON)</button>
-            </div>
+          <div class="panel-head"><h2>💸 Giderler</h2>
+            <div class="row-gap"><button id="addExpense" class="btn primary admin-only hidden">➕ Gider Ekle</button><button id="exportExpenses" class="btn outline admin-only">⬇️ JSON Dışa Aktar</button></div>
           </div>
-          <div id="expenseList"></div>
+          <div id="expenseList" class="list"></div>
         </div>
       </section>
 
-      <!-- ===== Fees (Aidat Ayarlamaları) ===== -->
-      <section id="fees" class="hidden">
-        <!-- içerik JS tarafından oluşturuluyor -->
+      <section id="reports" class="hidden">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>📑 Yıllık Aidat Takip Cetveli</h2>
+            <div class="row-gap" style="flex-wrap:wrap">
+              <select id="repYear"></select>
+              <select id="repMonthlyYear"></select>
+              <select id="repMonthlyMonth">
+                <option value="01">Ocak</option><option value="02">Şubat</option><option value="03">Mart</option>
+                <option value="04">Nisan</option><option value="05">Mayıs</option><option value="06">Haziran</option>
+                <option value="07">Temmuz</option><option value="08">Ağustos</option><option value="09">Eylül</option>
+                <option value="10">Ekim</option><option value="11">Kasım</option><option value="12">Aralık</option>
+              </select>
+              <select id="repFlat"></select>
+              <button id="repExportCSV" class="btn outline admin-only">CSV</button>
+              <button id="repFlatPDF" class="btn outline admin-only">PDF (Daire Bazlı)</button>
+              <button id="repMonthlyPDF" class="btn outline admin-only">Aylık İcmal PDF</button>
+            </div>
+          </div>
+          <div class="muted" style="margin-bottom:8px">Hücrelerde <span class="badge paid">Tam</span> / <span class="badge partial">Kısmi</span> / <span class="badge unpaid">Yok</span> gösterilir.</div>
+          <div class="table-container">
+            <table class="tbl" id="repTbl"><thead id="repThead"></thead><tbody id="repTbody"></tbody><tfoot id="repTfoot"></tfoot></table>
+          </div>
+        </div>
       </section>
 
-      <!-- ===== Reports ===== -->
-      <section id="reports" class="hidden">
-        <!-- içerik JS tarafından oluşturuluyor -->
+      <section id="fees" class="hidden">
+        <div class="panel">
+          <div class="panel-head"><h2>⚙️ Aidat / Ayarlar</h2><button id="setFee" class="btn primary admin-only hidden">📅 Ay Aidatı Tanımla</button></div>
+          <p class="muted">Bu bölümden belirli aylar için aidat tutarlarını tanımlayabilirsiniz.</p>
+          <div id="feesTableWrap"></div>
+        </div>
       </section>
+
     </main>
   </div>
 
-  <!-- ===== Modal Backdrop ===== -->
   <div id="modalBackdrop" class="modal-backdrop hidden"></div>
 
-  <!-- ===== Announcement Modal ===== -->
-  <div id="modalAnnouncement" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3>Duyuru</h3>
-        <button class="icon-close" data-close>✖</button>
-      </div>
-      <form id="formAnnouncement" class="form">
-        <label>Başlık
-          <input name="title" required />
-        </label>
-        <label>Tür
-          <select name="type">
-            <option value="info">Bilgi</option>
-            <option value="success">Başarı</option>
-            <option value="warning">Uyarı</option>
-            <option value="danger">Acil</option>
-          </select>
-        </label>
-        <label>Mesaj
-          <textarea name="content" rows="3" required></textarea>
-        </label>
-        <div class="modal-actions">
-          <button type="button" class="btn outline" data-close>İptal</button>
-          <button type="submit" class="btn primary">Kaydet</button>
-        </div>
-      </form>
-    </div>
-  </div>
+  <!-- Admin Info Modal -->
+  <div id="modalAdminInfo" class="modal hidden"><div class="modal-card">
+    <div class="modal-head"><h3 id="adminInfoModalTitle">Yönetici Bilgilerini Düzenle</h3><button class="icon-close" data-close>✖</button></div>
+    <form id="formAdminInfo" class="form">
+      <div id="rowAdmin" class="row-gap"><label style="flex:1">Yönetici Adı<input name="adminName" /></label><label style="flex:1">Yönetici Telefonu<input name="adminPhone" /></label></div>
+      <div id="rowAssistant" class="row-gap"><label style="flex:1">Yardımcı Adı<input name="assistantName" /></label><label style="flex:1">Yardımcı Telefonu<input name="assistantPhone" /></label></div>
+      <div id="rowSupervisor" class="row-gap"><label style="flex:1">Denetmen Adı<input name="supervisorName" /></label><label style="flex:1">Denetmen Telefonu<input name="supervisorPhone" /></label></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close>İptal</button><button class="btn primary">Kaydet</button></div>
+    </form>
+  </div></div>
 
-  <!-- ===== Resident Modal ===== -->
-  <div id="modalResident" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3 id="residentModalTitle">Sakin Ekle</h3>
-        <button class="icon-close" data-close>✖</button>
-      </div>
-      <form id="formResident" class="form">
-        <div class="row-gap" style="flex-wrap:wrap">
-          <label style="min-width:220px">Daire No
-            <input name="flatNo" required />
-          </label>
-          <label style="min-width:280px">Ad Soyad
-            <input name="name" required />
-          </label>
-        </div>
-        <div class="row-gap" style="flex-wrap:wrap">
-          <label style="min-width:220px">Telefon
-            <input name="phone" />
-          </label>
-          <label style="min-width:280px">E-posta
-            <input type="email" name="email" />
-          </label>
-        </div>
-        <div class="row-gap" style="flex-wrap:wrap">
-          <label style="min-width:220px">Durum
-            <select name="status" required>
-              <option value="">Seçiniz</option>
-              <option value="Ev Sahibi">Ev Sahibi</option>
-              <option value="Kiracı">Kiracı</option>
-            </select>
-          </label>
-          <label style="min-width:280px">Plaka
-            <input name="licensePlate" placeholder="34 ABC 123" />
-          </label>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn outline" data-close>İptal</button>
-          <button type="submit" class="btn primary">Kaydet</button>
-        </div>
-      </form>
-    </div>
-  </div>
+  <!-- Announcement Modal -->
+  <div id="modalAnnouncement" class="modal hidden"><div class="modal-card">
+    <div class="modal-head"><h3>Duyuru</h3><button class="icon-close" data-close>✖</button></div>
+    <form id="formAnnouncement" class="form">
+      <label>Başlık<input type="text" name="title" required /></label>
+      <label>Tür<select name="type"><option value="info">Bilgi</option><option value="success">Başarı</option><option value="warning">Uyarı</option><option value="danger">Acil</option></select></label>
+      <label>Mesaj<textarea name="content" rows="4" required></textarea></label>
+      <div class="modal-actions"><button type="button" class="btn" data-close>İptal</button><button class="btn primary">Kaydet</button></div>
+    </form>
+  </div></div>
 
-  <!-- ===== Payment Modal ===== -->
-  <div id="modalPayment" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3>Ödeme</h3>
-        <button class="icon-close" data-close>✖</button>
-      </div>
-      <form id="formPayment" class="form">
-        <!-- JS gerektiğinde sakin seçimi (residentSelect) ve tür (paymentType) alanlarını ekler -->
-        <label>Ödeyen (Ad Soyad)
-          <input name="residentName" placeholder="Ad Soyad" />
-        </label>
-        <label>Tutar (₺)
-          <input name="amount" type="number" step="0.01" min="0" required />
-        </label>
-        <label>Tarih
-          <input name="date" type="date" />
-        </label>
-        <label>Ay (Aidat için)
-          <input name="month" placeholder="YYYY-MM" />
-        </label>
-        <!-- JS: Ek Ödeme seçilince Açıklama alanını ekler (id=paymentDescription) ve Ay’ı gizler -->
-        <div class="modal-actions">
-          <button type="button" class="btn outline" data-close>İptal</button>
-          <button type="submit" class="btn primary">Kaydet</button>
-        </div>
-        <!-- JS için gizli alanlar -->
-        <input type="hidden" name="residentId" />
-        <input type="hidden" name="flatNo" />
-      </form>
-    </div>
-  </div>
+  <!-- Resident Modal -->
+  <div id="modalResident" class="modal hidden"><div class="modal-card" style="max-width:720px">
+    <div class="modal-head"><h3 id="residentModalTitle">Sakin Ekle</h3><button class="icon-close" data-close>✖</button></div>
+    <form id="formResident" class="form">
+      <div class="row-gap"><label style="flex:1">Daire No<input name="flatNo" required /></label><label style="flex:1">Ad Soyad<input name="name" required /></label></div>
+      <div class="row-gap"><label style="flex:1">Telefon<input name="phone" type="tel" /></label><label style="flex:1">E-posta<input name="email" type="email" /></label></div>
+      <div class="row-gap"><label style="flex:1">Durum<select name="status"><option value="">Seçiniz</option><option value="Owner">Ev Sahibi</option><option value="Tenant">Kiracı</option></select></label><label style="flex:1">Plaka<input name="licensePlate" placeholder="34ABC123" /></label></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close>İptal</button><button class="btn primary">Kaydet</button></div>
+    </form>
+  </div></div>
 
-  <!-- ===== Expense Modal ===== -->
-  <div id="modalExpense" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3>Gider</h3>
-        <button class="icon-close" data-close>✖</button>
-      </div>
-      <form id="formExpense" class="form">
-        <!-- Kategori & Not'u HTML'den veriyoruz; JS zaten alanları bulup kullanacak -->
-        <label>Kategori
-          <select name="category" id="expenseCategory" required>
-            <option value="Temizlik">Temizlik</option>
-            <option value="Genel">Genel</option>
-            <option value="Elektrik">Elektrik</option>
-            <option value="Su">Su</option>
-            <option value="Doğalgaz">Doğalgaz</option>
-            <option value="Bakım">Bakım</option>
-            <option value="Güvenlik">Güvenlik</option>
-            <option value="Sigorta">Sigorta</option>
-            <option value="Asansör Bakım">Asansör Bakım</option>
-            <option value="Diğer">Diğer</option>
-          </select>
-        </label>
-        <label>Not
-          <textarea name="note" rows="2" placeholder="Kısa not (opsiyonel)"></textarea>
-        </label>
-        <label>Tutar (₺)
-          <input name="amount" type="number" step="0.01" min="0" required />
-        </label>
-        <label>Tarih
-          <input name="date" type="date" />
-        </label>
-        <div class="modal-actions">
-          <button type="button" class="btn outline" data-close>İptal</button>
-          <button type="submit" class="btn primary">Kaydet</button>
-        </div>
-      </form>
-    </div>
-  </div>
+  <!-- Payment Modal -->
+  <div id="modalPayment" class="modal hidden"><div class="modal-card">
+    <div class="modal-head"><h3>Ödeme Ekle</h3><button class="icon-close" data-close>✖</button></div>
+    <form id="formPayment" class="form">
+      <label>Ödeyen (Sakin adı)<input name="residentName" required /></label>
+      <label>Ay (örn. 2025-08)<input name="month" placeholder="YYYY-MM" required /></label>
+      <label>Tutar (₺)<input name="amount" type="number" step="0.01" required /></label>
+      <label>Tarih<input name="date" type="date" /></label>
+      <div class="modal-actions"><button type="button" class="btn" data-close>İptal</button><button class="btn primary">Kaydet</button></div>
+    </form>
+  </div></div>
 
-  <!-- ===== Admin Info Modal ===== -->
-  <div id="adminInfoModal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h3 id="adminInfoModalTitle">Yönetici Bilgilerini Düzenle</h3>
-        <button class="icon-close" data-close>✖</button>
-      </div>
+  <!-- Expense Modal -->
+  <div id="modalExpense" class="modal hidden"><div class="modal-card">
+    <div class="modal-head"><h3>Gider</h3><button class="icon-close" data-close>✖</button></div>
+    <form id="formExpense" class="form">
+      <label>Tutar (₺)<input name="amount" type="number" step="0.01" required /></label>
+      <label>Tarih<input name="date" type="date" /></label>
+      <!-- Not ve Kategori script tarafından eklenecek -->
+      <div class="modal-actions"><button type="button" class="btn" data-close>İptal</button><button class="btn primary">Kaydet</button></div>
+    </form>
+  </div></div>
 
-      <form id="formAdminInfo" class="form">
-        <!-- Yönetici -->
-        <div id="rowAdmin">
-          <h4 style="margin:6px 0 10px">🏢 Yönetici</h4>
-          <div class="row-gap" style="flex-wrap:wrap">
-            <label style="min-width:260px">İsim
-              <input name="adminName" />
-            </label>
-            <label style="min-width:220px">Telefon
-              <input name="adminPhone" />
-            </label>
-          </div>
-          <hr style="border:0;border-top:1px solid var(--border);margin:14px 0">
-        </div>
-
-        <!-- Yardımcı -->
-        <div id="rowAssistant">
-          <h4 style="margin:6px 0 10px">👨‍💼 Yönetici Yardımcısı</h4>
-          <div class="row-gap" style="flex-wrap:wrap">
-            <label style="min-width:260px">İsim
-              <input name="assistantName" />
-            </label>
-            <label style="min-width:220px">Telefon
-              <input name="assistantPhone" />
-            </label>
-          </div>
-          <hr style="border:0;border-top:1px solid var(--border);margin:14px 0">
-        </div>
-
-        <!-- Denetmen -->
-        <div id="rowSupervisor">
-          <h4 style="margin:6px 0 10px">🔍 Denetmen</h4>
-          <div class="row-gap" style="flex-wrap:wrap">
-            <label style="min-width:260px">İsim
-              <input name="supervisorName" />
-            </label>
-            <label style="min-width:220px">Telefon
-              <input name="supervisorPhone" />
-            </label>
-          </div>
-        </div>
-
-        <div class="modal-actions" style="margin-top:14px">
-          <button type="button" class="btn outline" data-close>İptal</button>
-          <button type="submit" class="btn primary admin-only">Kaydet</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- App Script -->
   <script type="module" src="script.js"></script>
 </body>
 </html>

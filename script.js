@@ -87,6 +87,7 @@ async function getResidentsCached(){
 function invalidateResidentsCache(){ _residentsCache = null; }
 
 function isResidentActive(r){
+  // Varsayılan: alan yoksa aktif kabul et.
   if (r.isActive === false) return false;
   if (r.moveOutDate) {
     try{
@@ -100,7 +101,7 @@ function isResidentActive(r){
 
 /* ======= Aidat (fees) state ======= */
 let feesState = { ym: "", defaultAmount: 0, items: {} };
-let assignFlatOnSave = null; // fees'den yeni sakin atarken
+let assignFlatOnSave = null; // fees'den yeni sakin atarken kullanılır
 
 /* ==================== Role Fetch ==================== */
 async function fetchRole(uid){
@@ -108,6 +109,39 @@ async function fetchRole(uid){
     const snap = await getDoc(doc(db,'roles',uid));
     return snap.exists() && snap.data().role === 'admin';
   }catch(e){ console.error(e); return false; }
+}
+
+
+function enforceExportVisibility(){
+  const isAdmin = (currentRole === 'admin');
+  // IDs we know
+  const ids = ['exportPayments','exportExpenses','payExportCSV','expExportCSV'];
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    if(isAdmin){
+      el.style.display = '';
+      el.removeAttribute('aria-disabled');
+    }else{
+      el.style.display = 'none';
+      el.setAttribute('aria-disabled','true');
+      el.onclick = (e)=>{ e.preventDefault(); e.stopPropagation(); return false; };
+    }
+  });
+  // Generic text match fallback
+  document.querySelectorAll('button, a').forEach(el=>{
+    const text = (el.textContent || '').trim().toLowerCase();
+    if(text === 'csv' || text === 'json' || text.includes('csv') || text.includes('json')){
+      if(isAdmin){
+        el.style.display='';
+        el.removeAttribute('aria-disabled');
+      }else{
+        el.style.display='none';
+        el.setAttribute('aria-disabled','true');
+        el.onclick = (e)=>{ e.preventDefault(); e.stopPropagation(); return false; };
+      }
+    }
+  });
 }
 
 /* ==================== Auth UI ==================== */
@@ -126,20 +160,324 @@ loginForm?.addEventListener('submit', async (e)=>{
 });
 qs('#btnLogout')?.addEventListener('click', async ()=>{ try{ await signOut(auth); }catch(e){ console.error(e); }});
 
+
+function trToAscii(str){
+  const map = {'ç':'c','Ç':'C','ğ':'g','Ğ':'G','ı':'i','İ':'I','ö':'o','Ö':'O','ş':'s','Ş':'S','ü':'u','Ü':'U','₺':'TRY'};
+  return String(str).replace(/[çÇğĞıİöÖşŞüÜ₺]/g, ch=>map[ch]||ch);
+}
+
+/* ==================== Reports (Yıllık Aidat Takip Cetveli + PDF) ==================== */
+const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+
+function yearsOptionsHTML(span=9){
+  const y0 = new Date().getFullYear();
+  const start = y0 - Math.floor(span/2);
+  return Array.from({length:span}, (_,i)=> start+i)
+    .map(y=>`<option value="${y}" ${y===y0?'selected':''}>${y}</option>`).join('');
+}
+
+async function ensureReportsUI(){
+  const ysel = qs('#repYear');
+  if(ysel && !ysel.dataset.bound){
+    ysel.innerHTML = yearsOptionsHTML(9);
+    ysel.addEventListener('change', renderReportsTable);
+    ysel.dataset.bound = '1';
+  }
+  const yselM = qs('#repMonthlyYear');
+  if(yselM && !yselM.dataset.bound){
+    yselM.innerHTML = yearsOptionsHTML(9);
+    yselM.dataset.bound = '1';
+  }
+  // daire listesi
+  try{
+    const res = await getResidentsCached();
+    const flats = Array.from(new Set(res.map(r=> String(r.flatNo||'').trim()).filter(Boolean)))
+      .sort((a,b)=> (''+a).localeCompare(''+b, 'tr', {numeric:true}));
+    const flatSel = qs('#repFlat');
+    if(flatSel && !flatSel.dataset.filled){
+      flatSel.innerHTML = `<option value="">Daire seçin</option>` + flats.map(f=>`<option>${f}</option>`).join('');
+      flatSel.dataset.filled = '1';
+    }
+  }catch{}
+  // butonlar
+  qs('#repExportCSV')?.addEventListener('click', exportReportsCSV);
+  qs('#repFlatPDF')?.addEventListener('click', generateFlatAnnualPDF);
+  qs('#repMonthlyPDF')?.addEventListener('click', generateMonthlySummaryPDF);
+  try{ enforceExportVisibility(); }catch{}
+}
+
+async function getYearFeesMap(year){
+  const out = {}; // {flat: {'01': amount, ...}}
+  const docs = await Promise.all(
+    Array.from({length:12}, (_,i)=> getFeesDoc(`${year}-${String(i+1).padStart(2,'0')}`))
+  );
+  docs.forEach((fd, idx)=>{
+    const mm = String(idx+1).padStart(2,'0');
+    const def = +((fd&&fd.defaultAmount)||0);
+    const items = (fd&&fd.items)||{};
+    const flats = new Set(Object.keys(items));
+    Object.keys(out).forEach(f=>flats.add(f));
+    flats.forEach(f=>{
+      if(!out[f]) out[f] = {};
+      const amt = items[f]!=null ? +items[f] : def;
+      out[f][mm] = +amt || 0;
+    });
+  });
+  return out;
+}
+
+function collectFlatsFromResidentsAndFees(residents, feesMap){
+  const set = new Set();
+  (residents||[]).forEach(r=>{ const f=String(r.flatNo||'').trim(); if(f) set.add(f); });
+  Object.keys(feesMap||{}).forEach(f=> set.add(f));
+  return Array.from(set).sort((a,b)=> (''+a).localeCompare(''+b, 'tr', {numeric:true}));
+}
+
+
+function buildPaymentsIndex(payments){
+  // Aidat (Due) ödemelerini ay bazında indeksler: idx[flat][YYYY-MM] = toplam
+  const idx = {};
+  (payments||[]).forEach(p=>{
+    const type = p.type || p.paymentType || 'Due';
+    if(type !== 'Due') return;
+    const ym = (p.month||'').trim(); if(!/^\d{4}-\d{2}$/.test(ym)) return;
+    const flat = String(p.flatNo || p._derivedFlatNo || '').trim(); if(!flat) return;
+    const amount = +p.amount || 0;
+    if(!idx[flat]) idx[flat]={};
+    idx[flat][ym] = (idx[flat][ym]||0) + amount;
+  });
+  return idx;
+}
+
+function buildExtrasIndex(payments){
+  // Ek ödemeleri, ÖDEME TARİHİNE göre ay bazında indeksler: idx[flat][YYYY-MM] = toplam
+  const idx = {};
+  (payments||[]).forEach(p=>{
+    const type = p.type || p.paymentType || 'Due';
+    if(type !== 'Extra') return;
+    const dt = p.date ? new Date(p.date) : null;
+    if(!dt || isNaN(dt)) return;
+    const ym = dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0');
+    const flat = String(p.flatNo || p._derivedFlatNo || '').trim(); if(!flat) return;
+    const amount = +p.amount || 0;
+    if(!idx[flat]) idx[flat]={};
+    idx[flat][ym] = (idx[flat][ym]||0) + amount;
+  });
+  return idx;
+}
+
+
+
+async function renderReportsTable(){
+  const year = qs('#repYear')?.value || String(new Date().getFullYear());
+  const thead = qs('#repThead'), tbody = qs('#repTbody'), tfoot = qs('#repTfoot');
+  if(!thead||!tbody||!tfoot) return;
+
+  const [residents, payments] = await Promise.all([getResidentsCached(), listPayments()]);
+  const nameToFlat = new Map(residents.map(r=>[(r.name||'').trim().toLowerCase(), String(r.flatNo||'')]));
+  payments.forEach(r=>{
+    if(!r.flatNo && r.residentName){
+      const f = nameToFlat.get(r.residentName.trim().toLowerCase());
+      if(f) r._derivedFlatNo = f;
+    }
+  });
+
+  const feesMap = await getYearFeesMap(year);
+  const flats   = collectFlatsFromResidentsAndFees(residents, feesMap);
+  const payIdx  = buildPaymentsIndex(payments);   // Aidat ödemeleri
+  const extraIdx= buildExtrasIndex(payments);     // Ek ödemeler (tarihe göre)
+
+  thead.innerHTML = `
+    <tr>
+      <th>Daire</th>
+      ${MONTHS_TR.map((m)=>`<th>${m}</th>`).join('')}
+      <th>Toplam Aidat</th>
+      <th>Toplam Ödeme</th>
+      <th>Ek Ödeme</th>
+      <th>Fark</th>
+    </tr>`;
+
+  let sumDueAll=0, sumPaidAll=0, sumExtraAll=0;
+  const rowsHTML = flats.map(f=>{
+    let rowDue=0, rowPaid=0, rowExtra=0;
+    const tds = MONTHS_TR.map((_,i)=>{
+      const mm = String(i+1).padStart(2,'0');
+      const due = ((feesMap[f]||{})[mm])||0;
+      const paid = (payIdx[f] && payIdx[f][`${year}-${mm}`]) || 0;
+      const extra = (extraIdx[f] && extraIdx[f][`${year}-${mm}`]) || 0;
+      rowDue += due; rowPaid += paid; rowExtra += extra;
+
+      let cls='unpaid', label='Yok';
+      if(paid >= due && due>0) { cls='paid'; label='Tam'; }
+      else if(paid>0 && paid<due){ cls='partial'; label='Kısmi'; }
+      else if(due===0 && paid>0){ cls='partial'; label='Kısmi'; }
+
+      const tip = `Aidat: ${fmtTRY.format(due)}\nÖdeme: ${fmtTRY.format(paid)}\nEk: ${fmtTRY.format(extra)}`;
+      return `<td title="${tip.replace(/"/g,'&quot;')}"><span class="badge ${cls}">${label}</span></td>`;
+    }).join('');
+
+    sumDueAll += rowDue; sumPaidAll += rowPaid; sumExtraAll += rowExtra;
+    const diff = rowPaid - rowDue;
+    return `<tr>
+      <td>${f}</td>${tds}
+      <td>${fmtTRY.format(rowDue)}</td>
+      <td>${fmtTRY.format(rowPaid)}</td>
+      <td>${fmtTRY.format(rowExtra)}</td>
+      <td style="font-weight:700;${diff<0?'color:#991b1b':diff>0?'color:#166534':''}">${fmtTRY.format(diff)}</td>
+    </tr>`;
+  }).join('');
+
+  tbody.innerHTML = rowsHTML || `<tr><td colspan="18" style="text-align:center;color:#777;padding:16px">Henüz veri yok</td></tr>`;
+
+  const diffAll = sumPaidAll - sumDueAll;
+  tfoot.innerHTML = `
+    <tr>
+      <td style="font-weight:700">Genel Toplam</td>
+      ${MONTHS_TR.map(()=>'<td></td>').join('')}
+      <td style="font-weight:700">${fmtTRY.format(sumDueAll)}</td>
+      <td style="font-weight:700">${fmtTRY.format(sumPaidAll)}</td>
+      <td style="font-weight:700">${fmtTRY.format(sumExtraAll)}</td>
+      <td style="font-weight:700;${diffAll<0?'color:#991b1b':diffAll>0?'color:#166534':''}">${fmtTRY.format(diffAll)}</td>
+    </tr>`;
+
+  try{ enforceExportVisibility(); }catch(e){}
+}
+
+
+function exportReportsCSV(){
+  if(currentRole!=='admin') return;
+  const table = qs('#repTbl'); if(!table) return;
+  const rows = Array.from(table.querySelectorAll('tr')).map(tr=> Array.from(tr.children).map(td=> trToAscii(td.innerText.trim())));
+  const sep=','; const bom='\ufeff';
+  const csv = ['sep=,', ...rows.map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(sep))].join('\n');
+  const blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const y = qs('#repYear')?.value || new Date().getFullYear();
+  a.download = `aidat-raporu-${y}.csv`; a.click();
+}
+
+
+async function generateFlatAnnualPDF(){
+  if(currentRole!=='admin') return;
+  const flat = qs('#repFlat')?.value;
+  const year = qs('#repYear')?.value || String(new Date().getFullYear());
+  if(!flat){ alert('Daire seçin'); return; }
+
+  const [residents, payments] = await Promise.all([getResidentsCached(), listPayments()]);
+  const nameToFlat = new Map(residents.map(r=>[(r.name||'').trim().toLowerCase(), String(r.flatNo||'')]));
+  payments.forEach(r=>{ if(!r.flatNo && r.residentName){ const f = nameToFlat.get(r.residentName.trim().toLowerCase()); if(f) r._derivedFlatNo = f; } });
+
+  const feesMap = await getYearFeesMap(year);
+  const payIdx  = buildPaymentsIndex(payments);
+  const extraIdx= buildExtrasIndex(payments);
+
+  const body = [
+    [{text:'Ay',bold:true}, {text:'Aidat (₺)',bold:true}, {text:'Ödenen (₺)',bold:true}, {text:'Ek (₺)',bold:true}, {text:'Durum',bold:true}]
+  ];
+  let totalDue=0, totalPaid=0, totalExtra=0;
+  for(let i=1;i<=12;i++){
+    const mm = String(i).padStart(2,'0');
+    const due = ((feesMap[flat]||{})[mm])||0;
+    const paid = (payIdx[flat] && payIdx[flat][`${year}-${mm}`]) || 0;
+    const extra = (extraIdx[flat] && extraIdx[flat][`${year}-${mm}`]) || 0;
+    totalDue += due; totalPaid += paid; totalExtra += extra;
+    let label='Yok'; if(paid>=due && due>0) label='Tam'; else if(paid>0&&paid<due) label='Kısmi'; else if(due===0&&paid>0) label='Kısmi';
+    body.push([MONTHS_TR[i-1], fmtTRY.format(due), fmtTRY.format(paid), fmtTRY.format(extra), label]);
+  }
+
+  const dd = {
+    content: [
+      {text:`Yıllık Aidat Cetveli — Daire ${flat} — ${year}`, style:'header'},
+      {table:{widths:['*','*','*','*','*'], body}, layout:'lightHorizontalLines', margin:[0,10,0,10]},
+      {text:`Toplam Aidat: ${fmtTRY.format(totalDue)}    Toplam Ödeme: ${fmtTRY.format(totalPaid)}    Toplam Ek: ${fmtTRY.format(totalExtra)}    Fark: ${fmtTRY.format(totalPaid-totalDue)}`, margin:[0,6,0,0]}
+    ],
+    defaultStyle:{ font:'Roboto' },
+    styles:{ header:{fontSize:14,bold:true,margin:[0,0,0,8]} }
+  };
+  if(window.pdfMake && window.pdfMake.createPdf){
+    window.pdfMake.createPdf(dd).download(`Daire-${flat}-${year}.pdf`);
+  }else{
+    alert('PDF motoru (pdfmake) yüklenemedi.');
+  }
+}
+
+
+
+
+async function generateMonthlySummaryPDF(){
+  if(currentRole!=='admin') return;
+  const year = qs('#repMonthlyYear')?.value || qs('#repYear')?.value || String(new Date().getFullYear());
+  const month = qs('#repMonthlyMonth')?.value || String(new Date().getMonth()+1).padStart(2,'0');
+  const ym = `${year}-${month}`;
+
+  const [residents, payments] = await Promise.all([getResidentsCached(), listPayments()]);
+  const nameToFlat = new Map(residents.map(r=>[(r.name||'').trim().toLowerCase(), String(r.flatNo||'')]));
+  payments.forEach(r=>{
+    if(!r.flatNo && r.residentName){
+      const f = nameToFlat.get(r.residentName.trim().toLowerCase());
+      if(f) r._derivedFlatNo = f;
+    }
+  });
+
+  const fdoc = await getFeesDoc(ym);
+  const defaultAmount = +((fdoc&&fdoc.defaultAmount)||0);
+  const items = (fdoc&&fdoc.items)||{};
+
+  const flats = Array.from(new Set([
+    ...residents.map(r=> String(r.flatNo||'').trim()).filter(Boolean),
+    ...Object.keys(items)
+  ])).sort((a,b)=> (''+a).localeCompare(''+b,'tr',{numeric:true}));
+
+  const payIdx  = buildPaymentsIndex(payments);
+  const extraIdx= buildExtrasIndex(payments);
+  const rows = flats.map(f=>{
+    const due = (items[f]!=null) ? +items[f] : defaultAmount;
+    const paid = (payIdx[f] && payIdx[f][ym]) || 0;
+    const extra= (extraIdx[f] && extraIdx[f][ym]) || 0;
+    return { flat:f, due, paid, extra, diff: paid - due };
+  });
+
+  const body = [
+    [{text:'Daire',bold:true},{text:'Aidat (₺)',bold:true},{text:'Ödenen (₺)',bold:true},{text:'Ek (₺)',bold:true},{text:'Fark',bold:true}],
+    ...rows.map(r=>[ String(r.flat), fmtTRY.format(r.due), fmtTRY.format(r.paid), fmtTRY.format(r.extra), fmtTRY.format(r.diff) ])
+  ];
+  const sumDue = rows.reduce((s,r)=>s+r.due,0);
+  const sumPaid= rows.reduce((s,r)=>s+r.paid,0);
+  const sumExtra=rows.reduce((s,r)=>s+r.extra,0);
+
+  const dd = {
+    content:[
+      {text:`Aylık İcmal — ${MONTHS_TR[+month-1]} ${year}`, style:'header'},
+      {table:{widths:['auto','*','*','*','*'], body}, layout:'lightHorizontalLines', margin:[0,10,0,10]},
+      {text:`Toplam Aidat: ${fmtTRY.format(sumDue)}    Toplam Ödeme: ${fmtTRY.format(sumPaid)}    Toplam Ek: ${fmtTRY.format(sumExtra)}    Fark: ${fmtTRY.format(sumPaid-sumDue)}`}
+    ],
+    defaultStyle:{font:'Roboto'},
+    styles:{ header:{fontSize:14,bold:true,margin:[0,0,0,8]} }
+  };
+  if(window.pdfMake && window.pdfMake.createPdf){
+    window.pdfMake.createPdf(dd).download(`Aylik-Icmal-${ym}.pdf`);
+  }else{
+    alert('PDF motoru (pdfmake) yüklenemedi.');
+  }
+}
+
+
+
 /* ==================== Navigation ==================== */
-const pages = ['dashboard','residents','payments','expenses','fees','reports'];
+const pages = ['dashboard','residents','payments','expenses','reports','fees'];
 function showPage(id){
+  try{ enforceExportVisibility(); }catch(e){}
   pages.forEach(p=>{ const el=qs('#'+p); if(!el) return; p===id?show(el):hide(el); });
   qsa('.nav .nav-btn').forEach(b=>b.classList.remove('active'));
-  const map={dashboard:'#btnDashboard',residents:'#btnResidents',payments:'#btnPayments',expenses:'#btnExpenses',fees:'#btnFees',reports:'#btnReports'};
+  const map={dashboard:'#btnDashboard',residents:'#btnResidents',payments:'#btnPayments',expenses:'#btnExpenses',reports:'#btnReports',fees:'#btnFees'};
   qs(map[id])?.classList.add('active');
 }
 qs('#btnDashboard')?.addEventListener('click',()=>showPage('dashboard'));
 qs('#btnResidents')?.addEventListener('click',async ()=>{ showPage('residents'); await renderResidentsTable(); });
 qs('#btnPayments')?.addEventListener('click',async ()=>{ showPage('payments'); await ensurePaymentsUI(); await renderPaymentsTable(); });
 qs('#btnExpenses')?.addEventListener('click',async ()=>{ showPage('expenses'); await ensureExpensesUI(); await renderExpensesTable(); });
+qs('#btnReports')?.addEventListener('click',async ()=>{ showPage('reports'); await ensureReportsUI?.(); await renderReportsTable?.(); });
 qs('#btnFees')?.addEventListener('click',async ()=>{ showPage('fees'); await ensureFeesUI(); await renderFeesTable(); });
-qs('#btnReports')?.addEventListener('click',async ()=>{ showPage('reports'); await ensureReportsUI(); await renderReports(); });
 
 /* ==================== Firestore wrappers ==================== */
 async function listResidents(){ const s=await getDocs(collection(db,'residents')); return s.docs.map(d=>({id:d.id,...d.data()})); }
@@ -231,17 +569,28 @@ async function renderAnnouncements(){
   }).join('') || '<div class="neutral"><div><strong>Henüz duyuru yok</strong></div></div>';
 
   box.onclick = async (e)=>{
-    const edit=e.target.closest('.edit'); const del=e.target.closest('.delete');
-    if(edit){
-      const id=edit.dataset.id; const s=announcementsCache.find(a=>a.id===id); if(!s) return;
-      const f=qs('#formAnnouncement'); f.title.value=s.title||''; f.type.value=s.type||'info'; f.content.value=s.content||'';
-      editingAnnouncementId=id; openModal(modalSel('#modalAnnouncement','#announcementModal')); return;
-    }
-    if(del){
-      const id=del.dataset.id; if(!confirm('Bu duyuruyu silmek istiyor musunuz?')) return;
-      await deleteAnnouncement(id); await renderAnnouncements(); return;
-    }
-  };
+  const edit = e.target.closest('.edit');
+  const del  = e.target.closest('.delete');
+  if(edit){
+    const id = edit.dataset.id;
+    const s  = announcementsCache.find(a=>a.id===id); if(!s) return;
+    const f  = qs('#formAnnouncement');
+    if(!f){ alert('Duyuru formu bulunamadı'); return; }
+    f.title.value   = s.title||'';
+    f.type.value    = s.type||'info';
+    f.content.value = s.content||'';
+    editingAnnouncementId = id;
+    openModal(modalSel('#modalAnnouncement','#announcementModal'));
+    return;
+  }
+  if(del){
+    const id = del.dataset.id;
+    if(!confirm('Bu duyuruyu silmek istiyor musunuz?')) return;
+    await deleteAnnouncement(id);
+    await renderAnnouncements();
+    return;
+  }
+};
 }
 
 /* --- Admin Info (view) --- */
@@ -283,7 +632,7 @@ function openAdminInfoForRole(role){
     setVal('supervisorName', data.supervisorName); setVal('supervisorPhone', data.supervisorPhone);
   });
 
-  openModal(modalSel('#adminInfoModal','#modalAdminInfo'));
+  openModal(modalSel('#modalAdminInfo','#adminInfoModal'));
 }
 qsa('.role-edit').forEach(btn=>{
   btn.addEventListener('click',(e)=>{
@@ -300,11 +649,11 @@ async function renderResidentsTable(){
 
   const isAdminUI = currentRole==='admin';
   tbody.innerHTML = rows.map(r=>{
-    const activeBadge = isResidentActive(r) ? '' : ' <span class="pill" title="Pasif / Taşınmış">Pasif</span>';
+    const activeBadge = '';
     return `
     <tr data-id="${r.id}">
       <td>${r.flatNo||''}</td>
-      <td>${r.name||''}${activeBadge}</td>
+      <td>${r.name||''}</td>
       <td>${r.phone||''}</td>
       <td>${r.email||''}</td>
       <td>${statusToTR(r.status)}</td>
@@ -312,7 +661,6 @@ async function renderResidentsTable(){
       <td>
         ${isAdminUI ? `
           <button type="button" class="btn small" data-edit="${r.id}">✏️ Düzenle</button>
-          <button type="button" class="btn small" data-moveout="${r.id}">🚚 Taşındı</button>
           <button type="button" class="btn small danger" data-del="${r.id}">🗑️ Sil</button>
         ` : ''}
       </td>
@@ -328,8 +676,7 @@ async function renderResidentsTable(){
 async function onResidentsTableClick(e){
   const editBtn = e.target.closest('button[data-edit]');
   const delBtn  = e.target.closest('button[data-del]');
-  const mvBtn   = e.target.closest('button[data-moveout]');
-  if (!editBtn && !delBtn && !mvBtn) return;
+  if (!editBtn && !delBtn) return;
   e.preventDefault(); e.stopPropagation();
   if(currentRole!=='admin'){ alert('Sadece yönetici işlem yapabilir.'); return; }
 
@@ -358,19 +705,9 @@ async function onResidentsTableClick(e){
     }
   }
 
-  if(mvBtn){
-    const id = mvBtn.getAttribute('data-moveout');
-    if(!confirm('Bu sakini pasif yapıp taşındı olarak işaretlemek istiyor musunuz?')) return;
-    try{
-      const moveOutDate = new Date().toISOString();
-      await updateResident(id, { isActive:false, moveOutDate });
-      await renderResidentsTable();
-    }catch(err){ console.error(err); alert('Güncellenemedi: '+(err?.message||'Bilinmeyen hata')); }
-  }
-
   if(delBtn){
     const id = delBtn.getAttribute('data-del');
-    if(confirm('Bu sakini silmek istiyor musunuz? (Geçmişi kaybetmek istemiyorsanız "Taşındı"yı kullanın)')){
+    if(confirm('Bu sakini silmek istiyor musunuz?')){
       await deleteResident(id);
       await renderResidentsTable();
       await renderDashboard();
@@ -412,8 +749,9 @@ qs('#formResident')?.addEventListener('submit', async (e)=>{
       await updateResident(editingResidentId, payload);
     }else{
       const res = await addResident(payload);
+      // Eğer fees sayfasından "Yeni Sakin Ata" ile geldiysek, eski aktif sakini pasifle
       if(assignFlatOnSave){
-        await deactivateActiveResidentsForFlat(assignFlatOnSave, res.id, payload.moveInDate);
+        // (removed move-out flow)
         assignFlatOnSave = null;
       }
     }
@@ -521,6 +859,7 @@ async function ensurePaymentsUI(){
       payTbody.dataset.bound = '1';
     }
   }
+try{ enforceExportVisibility(); }catch(e){}
 }
 
 async function onPaymentsTableClick(e){
@@ -590,7 +929,7 @@ async function onPaymentsTableClick(e){
   }
 }
 
-// Ödeme formunu zenginleştir
+// Ödeme formunu zenginleştir: sakin select + daire + tür + açıklama
 async function enhancePaymentForm(){
   const f = qs('#formPayment'); if(!f) return;
 
@@ -787,28 +1126,42 @@ async function renderPaymentsTable(){
 
   totalCell.textContent = fmtTRY.format(total);
 }
+try{ enforceExportVisibility(); }catch(e){}
 
-function exportPaymentsCSV(){
-  const rows = Array.from(document.querySelectorAll('#payTbody tr'));
-  if(!rows.length){ alert('Dışa aktaracak veri yok.'); return; }
-  const headers = ['Ödeyen','Daire','Tür','Ay','Açıklama','Tutar','Tarih'];
-  const data = rows.map(tr=>{
-    const tds = tr.querySelectorAll('td');
-    return [
-      tds[0]?.innerText||'', tds[1]?.innerText||'', tds[2]?.innerText||'',
-      tds[3]?.innerText||'', tds[4]?.innerText||'', tds[5]?.innerText||'',
-      tds[6]?.innerText||''
-    ];
+async function exportPaymentsCSV(){
+  const [rows, residents] = await Promise.all([listPayments(), getResidentsCached()]);
+  const nameToFlat = new Map(residents.map(r=>[(r.name||'').trim().toLowerCase(), r.flatNo || '']));
+  rows.forEach(r=>{
+    if(!r.flatNo && r.residentName){
+      const f = nameToFlat.get((r.residentName||'').trim().toLowerCase());
+      if(f) r._derivedFlatNo = f;
+    }
   });
-  const csv = [headers, ...data].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `payments-${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
+  const q  = qs('#paySearch')?.value?.trim() || '';
+  const y  = qs('#payYear')?.value || '';
+  const m  = qs('#payMonth')?.value || '';
+  const t  = qs('#payType')?.value || '';
+  const rid= qs('#payResident')?.value || '';
+  const normalized = rows.map(r=>({ ...r, type:(r.type||r.paymentType||'Due') }));
+  const filtered = normalized.filter(r=> matchPaymentFilters({ ...r, flatNo: r.flatNo || r._derivedFlatNo }, q,y,m,t,rid));
+  const headers = ['Odeyen','Daire','Tur','Ay','Aciklama','Tutar','Tarih'];
+  const data = filtered.map(r=>{
+    const flat = r.flatNo || r._derivedFlatNo || '';
+    const type = r.type==='Extra' ? 'Ek' : 'Aidat';
+    const month= r.type==='Extra' ? '' : (r.month||'');
+    const desc = r.description || '';
+    const amount = (+r.amount||0).toFixed(2);
+    const date = r.date ? (new Date(r.date)).toISOString().slice(0,10) : '';
+    return [r.residentName||'', String(flat), type, month, desc, amount, date];
+  });
+  const sep=','; const bom='\ufeff';
+  const csv = ['sep=,', headers.join(sep), ...data.map(r=> r.map(v=>`"${trToAscii(String(v)).replace(/"/g,'""')}"`).join(sep))].join('\n');
+  const blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download = `payments-${new Date().toISOString().slice(0,10)}.csv`; a.click();
 }
 
-/* ==================== EXPENSES ==================== */
+/* ==================== EXPENSES (Kategori + Not + Filtreler) ==================== */
 const EXP_CATEGORIES = [
   'Temizlik','Genel','Elektrik','Su','Doğalgaz','Bakım',
   'Güvenlik','Sigorta','Asansör Bakım','Diğer'
@@ -884,6 +1237,7 @@ async function ensureExpensesUI(){
       tb.dataset.bound='1';
     }
   }
+try{ enforceExportVisibility(); }catch(e){}
 }
 function matchExpenseFilters(rec, q, y, m, cat){
   let ok = true;
@@ -943,23 +1297,25 @@ async function renderExpensesTable(){
 
   totalCell.textContent = fmtTRY.format(total);
 }
-function exportExpensesCSV(){
-  const rows = Array.from(document.querySelectorAll('#expTbody tr'));
-  if(!rows.length){ alert('Dışa aktaracak veri yok.'); return; }
+try{ enforceExportVisibility(); }catch(e){}
+async function exportExpensesCSV(){
+  const rows = await listExpenses();
+  const q   = qs('#expSearch')?.value?.trim() || '';
+  const cat = qs('#expCategory')?.value || '';
+  const y   = qs('#expYear')?.value || '';
+  const m   = qs('#expMonth')?.value || '';
+  const filtered = rows.filter(r=> matchExpenseFilters(r,q,y,m,cat));
   const headers = ['Kategori','Not','Tutar','Tarih'];
-  const data = rows.map(tr=>{
-    const tds = tr.querySelectorAll('td');
-    return [
-      tds[0]?.innerText||'', tds[1]?.innerText||'',
-      tds[2]?.innerText||'', tds[3]?.innerText||''
-    ];
+  const data = filtered.map(r=>{
+    const amount = (+r.amount||0).toFixed(2);
+    const date = r.date ? (new Date(r.date)).toISOString().slice(0,10) : '';
+    return [r.category||'', r.note||'', amount, date];
   });
-  const csv = [headers, ...data].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `expenses-${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
+  const sep=','; const bom='\ufeff';
+  const csv = ['sep=,', headers.join(sep), ...data.map(r=> r.map(v=>`"${trToAscii(String(v)).replace(/"/g,'""')}"`).join(sep))].join('\n');
+  const blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download = `expenses-${new Date().toISOString().slice(0,10)}.csv`; a.click();
 }
 async function onExpensesTableClick(e){
   const editBtn = e.target.closest('button[data-edit]');
@@ -1047,6 +1403,10 @@ function feesToolbarHTML(){
     <option value="07">Temmuz</option><option value="08">Ağustos</option><option value="09">Eylül</option>
     <option value="10">Ekim</option><option value="11">Kasım</option><option value="12">Aralık</option>
   `;
+  const now = new Date();
+  const yNow = now.getFullYear();
+  const mNow = String(now.getMonth()+1).padStart(2,'0');
+
   return `
   <div class="panel">
     <div class="panel-head">
@@ -1081,6 +1441,7 @@ function feesToolbarHTML(){
       </div>
     </div>
   </div>
+  <script>/* preselect current */</script>
   `;
 }
 
@@ -1095,6 +1456,7 @@ async function ensureFeesUI(){
   const box = qs('#fees'); if(!box) return;
   if(!qs('#feesTbody')){
     box.innerHTML = feesToolbarHTML();
+    // Default selections
     const now = new Date();
     qs('#feeYear').value = String(now.getFullYear());
     qs('#feeMonth').value = String(now.getMonth()+1).padStart(2,'0');
@@ -1126,8 +1488,10 @@ async function loadFeesForSelectors(){
   feesState.defaultAmount = +(feesDoc?.defaultAmount || 0);
   feesState.items = {...(feesDoc?.items||{})};
 
+  // UI input
   const defInp = qs('#feeDefault'); if(defInp) defInp.value = feesState.defaultAmount || '';
 
+  // Rows adayları: aktif sakinlerin daireleri + mevcut fees'teki daireler
   const residents = await getResidentsCached();
   const activeFlats = new Set(residents.filter(isResidentActive).map(r=> String(r.flatNo||'').trim()).filter(Boolean));
   const feeFlats = new Set(Object.keys(feesState.items||{}));
@@ -1203,10 +1567,12 @@ function onFeesTbodyInput(e){
 
   if(key==='flat'){
     const newFlat = String(e.target.value||'').trim();
+    // flat değişirse, items anahtarı da değişir
     const val = feesState.items[flatOld];
     delete feesState.items[flatOld];
     tr.setAttribute('data-flat', newFlat);
     if(newFlat) feesState.items[newFlat] = val;
+    // _rows güncelle
     feesState._rows = feesState._rows.map(f=> f===flatOld? newFlat : f);
   }
 
@@ -1240,6 +1606,7 @@ async function openAssignResidentForFlat(flat){
   if(!flat){ alert('Daire numarası yok.'); return; }
   assignFlatOnSave = String(flat).trim();
 
+  // Sakin formunu resetle ve daireyi doldur
   const form = qs('#formResident');
   if(!form){ alert('Sakin formu bulunamadı.'); return; }
   form.reset();
@@ -1277,348 +1644,16 @@ async function exportFeesCSV(){
   a.click();
 }
 
-/* ==================== RAPORLAR ==================== */
-function reportsHTML(){
-  const years = Array.from({length: 8}, (_,i)=> new Date().getFullYear() - 4 + i);
-  const yearOpts = years.map(y=>`<option value="${y}">${y}</option>`).join('');
-  return `
-    <div class="panel">
-      <div class="panel-head">
-        <h3>Aidat Ödeme Cetveli</h3>
-        <div class="row-gap" style="align-items:center">
-          <select id="repYear" class="pill">${yearOpts}</select>
-          <button id="repExportDues" class="btn outline">CSV</button>
-        </div>
-      </div>
-      <div class="table-container">
-        <table class="tbl" style="min-width:980px">
-          <thead id="duesThead"></thead>
-          <tbody id="duesTbody"></tbody>
-        </table>
-      </div>
-      <div class="muted" style="margin-top:8px">İpucu: Hücreye tıklayınca ilgili sakin ve ay için ödeme formu açılır.</div>
-    </div>
-
-    <div class="panel mt">
-      <div class="panel-head">
-        <h3>Aylık Gelir - Gider Özeti</h3>
-        <div><button id="repExportIE" class="btn outline">CSV</button></div>
-      </div>
-      <div class="table-container">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th>Ay</th>
-              <th>Aidat Geliri</th>
-              <th>Ek Gelir</th>
-              <th>Toplam Gelir</th>
-              <th>Gider</th>
-              <th>Net</th>
-            </tr>
-          </thead>
-          <tbody id="ieTbody"></tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-async function ensureReportsUI(){
-  const box = qs('#reports'); if(!box) return;
-  if(!qs('#repYear')){
-    box.innerHTML = reportsHTML();
-    const now = new Date();
-    qs('#repYear').value = String(now.getFullYear());
-
-    qs('#repYear')?.addEventListener('change', renderReports);
-    qs('#repExportDues')?.addEventListener('click', exportDuesMatrixCSV);
-    qs('#repExportIE')?.addEventListener('click', exportIECSV);
-
-    const tb = qs('#duesTbody');
-    if(tb && !tb.dataset.bound){
-      tb.addEventListener('click', onDuesCellClick);
-      tb.dataset.bound = '1';
-    }
-  }
-}
-
-const MONTHS_TR = ['01','02','03','04','05','06','07','08','09','10','11','12'];
-const MONTHS_TR_LABEL = ['Oca','Şub','Mar','Nis','May','Haz','Tem','Ağu','Eyl','Eki','Kas','Ara'];
-
-function isActiveInMonth(r, ym){
-  const [y,m]=ym.split('-').map(Number);
-  const start = new Date(y, m-1, 1);
-  const end = new Date(y, m, 0, 23,59,59,999);
-  const inDate  = r.moveInDate  ? new Date(r.moveInDate)  : null;
-  const outDate = r.moveOutDate ? new Date(r.moveOutDate) : null;
-  const activeFlag = r.isActive !== false;
-  const afterIn  = !inDate  || inDate  <= end;
-  const beforeOut= !outDate || outDate >= start;
-  return activeFlag && afterIn && beforeOut;
-}
-
-let _lastDuesMatrix = null; // export için sakla
-
-// ====== YENİ renderReports (N/A sadece ücret yoksa; ikonlar ✅🟡❌) ======
-async function renderReports(){
-  const year = qs('#repYear')?.value || String(new Date().getFullYear());
-  const [residents, paymentsRaw, expenses] = await Promise.all([
-    getResidentsCached(), listPayments(), listExpenses()
-  ]);
-
-  // Normalize payments: type + flatNo türet + month normalize
-  const nameToFlat = new Map(residents.map(r=>[(r.name||'').trim().toLowerCase(), String(r.flatNo||'').trim()]));
-  const payments = paymentsRaw.map(p=>{
-    const type = p.type || p.paymentType || 'Due';
-    let flat = (p.flatNo||'');
-    if(!flat && p.residentName){
-      const f = nameToFlat.get((p.residentName||'').trim().toLowerCase());
-      if(f) flat = f;
-    }
-    // month'ı 'YYYY-MM' formuna zorla (aidat için)
-    let mm = p.month || '';
-    if(mm){
-      const m = String(mm).slice(0,7);
-      const parts = m.split('-');
-      if(parts.length===2){
-        const y = parts[0], mo = parts[1].padStart(2,'0');
-        mm = `${y}-${mo}`;
-      }else{
-        mm = m;
-      }
-    }
-    return { ...p, type, _flat: String(flat||'').trim(), month:mm };
-  });
-
-  // Ödeme kovaları
-  const paysByRidYM  = new Map(); // "residentId|ym" -> sum
-  const paysByFlatYM = new Map(); // "flat|ym" -> sum (rezidant bağımsız)
-  const paysByNameFlat = new Map(); // "name|flat|ym" -> sum (ek/fallback)
-
-  for(const p of payments){
-    if(p.type !== 'Due') continue; // ek ödemeler cetvele girmez
-    const ym = (p.month||'').slice(0,7);
-    if(!ym) continue;
-
-    const amt = +(p.amount||0);
-    const rid = (p.residentId||'').trim();
-    const flat = (p._flat||'').trim();
-    const name = (p.residentName||'').trim().toLowerCase();
-
-    if(rid){
-      const k = `${rid}|${ym}`;
-      paysByRidYM.set(k, (paysByRidYM.get(k)||0) + amt);
-    }
-    if(flat){
-      const k = `${flat}|${ym}`;
-      paysByFlatYM.set(k, (paysByFlatYM.get(k)||0) + amt);
-    }
-    if(name || flat){
-      const k = `${name}|${flat}|${ym}`;
-      paysByNameFlat.set(k, (paysByNameFlat.get(k)||0) + amt);
-    }
-  }
-
-  // Yılın tüm ayları için aidat (fees) dokümanları
-  const feesByYM = {};
-  for(const m of MONTHS_TR){
-    const ym = `${year}-${m}`;
-    const fdoc = await getFeesDoc(ym);
-    feesByYM[ym] = {
-      defaultAmount: +(fdoc?.defaultAmount||0),
-      items: {...(fdoc?.items||{})}
-    };
-  }
-
-  // ===== Aidat Cetveli =====
-  const thead = qs('#duesThead'); const tbody = qs('#duesTbody');
-  if(thead){
-    thead.innerHTML = `<tr>
-      <th style="position:sticky;left:0;background:#fff;z-index:2">Sakin</th>
-      <th style="position:sticky;left:120px;background:#fff;z-index:2">Daire</th>
-      ${MONTHS_TR_LABEL.map(m=>`<th>${m}</th>`).join('')}
-    </tr>`;
-  }
-
-  const sortedResidents = [...residents].sort((a,b)=>
-    (''+(a.flatNo||'')).localeCompare((''+(b.flatNo||'')),'tr',{numeric:true}) || (a.name||'').localeCompare((b.name||''),'tr')
-  );
-
-  const matrix = [];
-
-  if(tbody){
-    tbody.innerHTML = sortedResidents.map(r=>{
-      const rid  = r.id;
-      const flat = String(r.flatNo||'').trim();
-      const row  = { name:r.name||'', flat:flat, cells:[] };
-
-      const tds = MONTHS_TR.map((m,idx)=>{
-        const ym = `${year}-${m}`;
-        // Ücret: daireye özel varsa onu, yoksa varsayılanı al
-        const feeConf = feesByYM[ym] || {defaultAmount:0, items:{}};
-        const fee = flat ? (feeConf.items[flat] ?? feeConf.defaultAmount ?? 0) : 0;
-
-        // Ödenen: öncelik sırası residentId|ym -> flat|ym -> name|flat|ym
-        let paid = 0;
-        if(rid) paid = paysByRidYM.get(`${rid}|${ym}`) || 0;
-        if(paid === 0 && flat) paid = paysByFlatYM.get(`${flat}|${ym}`) || 0;
-        if(paid === 0 && (r.name||flat)) {
-          const k = `${(r.name||'').trim().toLowerCase()}|${flat}|${ym}`;
-          paid = paysByNameFlat.get(k) || 0;
-        }
-
-        let html = '';
-        let status = 'NA';
-
-        if(fee <= 0){
-          // Yükümlülük yok: N/A (ücret tanımlı değil)
-          html = `<span class="muted" title="Bu ay için ücret tanımlı değil">—</span>`;
-          status = 'NA';
-        }else if(paid <= 0){
-          html = `<span class="status-icon status-unpaid" title="Ücret: ${fmtTRY.format(fee)} | Ödenen: ${fmtTRY.format(0)}">❌</span>`;
-          status = 'UNPAID';
-        }else if(paid < fee){
-          html = `<span class="status-icon status-partial" title="Ücret: ${fmtTRY.format(fee)} | Ödenen: ${fmtTRY.format(paid)}">🟡</span>`;
-          status = 'PARTIAL';
-        }else{
-          html = `<span class="status-icon status-paid" title="Ücret: ${fmtTRY.format(fee)} | Ödenen: ${fmtTRY.format(paid)}">✅</span>`;
-          status = 'PAID';
-        }
-
-        row.cells.push({ym, fee, paid, status});
-
-        // Ücret tanımlıysa hücreyi tıklanabilir yap (hızlı ödeme)
-        const clickable = fee > 0 ? `style="cursor:pointer"` : '';
-        return `<td data-rid="${rid}" data-ym="${ym}" data-exp="${fee}" ${clickable}>${html}</td>`;
-      }).join('');
-
-      matrix.push(row);
-
-      return `<tr>
-        <td style="position:sticky;left:0;background:#fff;z-index:1">${r.name||''}</td>
-        <td style="position:sticky;left:120px;background:#fff;z-index:1">${flat}</td>
-        ${tds}
-      </tr>`;
-    }).join('') || `<tr><td colspan="14" style="text-align:center;color:#777;padding:16px">Sakin bulunamadı</td></tr>`;
-  }
-
-  _lastDuesMatrix = { year, matrix };
-
-  // ===== Aylık Gelir-Gider =====
-  const ieTbody = qs('#ieTbody');
-  if(ieTbody){
-    const buckets = {};
-    for(const m of MONTHS_TR){ buckets[`${year}-${m}`] = { due:0, extra:0, expense:0 }; }
-
-    for(const p of payments){
-      // Aidat gelirini month'a, ek ödemeyi tarih ayına yaz
-      if(p.type==='Due' && p.month){
-        const ym = p.month.slice(0,7);
-        if(buckets[ym]) buckets[ym].due += (+p.amount||0);
-      }else if(p.type==='Extra'){
-        const d = p.date ? new Date(p.date) : null;
-        const ym = d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` : '';
-        if(buckets[ym]) buckets[ym].extra += (+p.amount||0);
-      }
-    }
-    for(const ex of expenses){
-      const d = ex.date ? new Date(ex.date) : null;
-      const ym = d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` : '';
-      if(buckets[ym]) buckets[ym].expense += (+ex.amount||0);
-    }
-
-    ieTbody.innerHTML = MONTHS_TR.map((m,i)=>{
-      const ym = `${year}-${m}`, b=buckets[ym];
-      if(!b) return '';
-      const income = b.due + b.extra;
-      const net = income - b.expense;
-      return `<tr>
-        <td>${MONTHS_TR_LABEL[i]} ${year}</td>
-        <td>${fmtTRY.format(b.due)}</td>
-        <td>${fmtTRY.format(b.extra)}</td>
-        <td>${fmtTRY.format(income)}</td>
-        <td>${fmtTRY.format(b.expense)}</td>
-        <td>${fmtTRY.format(net)}</td>
-      </tr>`;
-    }).join('') || `<tr><td colspan="6" style="text-align:center;color:#777;padding:16px">Veri yok</td></tr>`;
-  }
-}
-
-function onDuesCellClick(e){
-  const td = e.target.closest('td[data-ym]'); if(!td) return;
-  const ym = td.getAttribute('data-ym');
-  const rid = td.getAttribute('data-rid') || '';
-  const expected = +(td.getAttribute('data-exp')||0);
-  if(!ym || expected<=0) return; // ücret yoksa form açma
-
-  openQuickPayment(rid, ym, expected);
-}
-
-async function openQuickPayment(residentId, ym, expected){
-  if(currentRole!=='admin') return;
-  await enhancePaymentForm();
-  const f = qs('#formPayment'); if(!f) return;
-
-  const residents = await getResidentsCached();
-  const sel = qs('#residentSelect');
-  if(sel){ sel.value = residentId || ''; sel.dispatchEvent(new Event('change')); }
-
-  const monthField = f.querySelector('[name="month"]');
-  if(monthField) monthField.value = ym;
-
-  const typeSel = qs('#paymentType'); if(typeSel) typeSel.value = 'Due';
-  toggleMonthVisibility();
-
-  const amountInp = f.querySelector('input[name="amount"]');
-  if(amountInp && (!amountInp.value || +amountInp.value===0)) amountInp.value = expected;
-
-  openModal(modalSel('#modalPayment','#paymentModal'));
-}
-
-function exportDuesMatrixCSV(){
-  if(!_lastDuesMatrix || !_lastDuesMatrix.matrix?.length){ alert('Önce tabloyu görüntüleyin.'); return; }
-  const year = _lastDuesMatrix.year;
-  const headers = ['Sakin','Daire', ...MONTHS_TR_LABEL.map(m=>`${m} ${year}`)];
-  const rows = _lastDuesMatrix.matrix.map(r=>{
-    const cells = r.cells.map(c=>{
-      if(c.fee<=0) return 'N/A';
-      const s = (c.status==='PAID')?'Ödendi':(c.status==='PARTIAL'?'Eksik':'Yok');
-      return `${s} (${c.paid}/${c.fee})`;
-    });
-    return [r.name, r.flat, ...cells];
-  });
-
-  const csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `dues-matrix-${year}.csv`;
-  a.click();
-}
-
-function exportIECSV(){
-  const tbody = qs('#ieTbody');
-  const rows = Array.from(tbody?.querySelectorAll('tr')||[]);
-  if(!rows.length){ alert('Dışa aktaracak veri yok.'); return; }
-  const headers = ['Ay','Aidat Geliri','Ek Gelir','Toplam Gelir','Gider','Net'];
-  const data = rows.map(tr=> Array.from(tr.querySelectorAll('td')).map(td=>td.innerText||'') );
-  const csv = [headers, ...data].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `income-expense-${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-}
-
 /* ==================== Modals ==================== */
 const backdrop = qs('#modalBackdrop');
-function openModal(sel){ const m=qs(sel); if(!m) return; show(backdrop); show(m); const i=m.querySelector('input,textarea,select,button'); if(i) setTimeout(()=>i.focus(),60); }
+function openModal(sel){ const m=qs(sel); if(!m){ console.warn('Modal not found:', sel); return; } show(m); show(qs('#modalBackdrop')); }
 function closeModals(){
   hide(backdrop); qsa('.modal').forEach(m=>hide(m));
   editingPaymentId = null;
   editingResidentId = null;
   editingAnnouncementId = null;
   editingExpenseId = null;
+  // assignFlatOnSave kalabilir; sakin kayıt tamamlanınca sıfırlanıyor
 }
 backdrop?.addEventListener('click',closeModals);
 qsa('.modal [data-close]')?.forEach(b=>b.addEventListener('click',closeModals));
@@ -1658,7 +1693,7 @@ qs('#formAnnouncement')?.addEventListener('submit', async (e)=>{
   editingAnnouncementId=null; e.target.reset(); closeModals(); await renderAnnouncements();
 });
 
-/* === Admin Bilgileri formu === */
+/* === Admin Bilgileri formu (iki id destekli) === */
 const adminForm = qs('#adminInfoForm') || qs('#formAdminInfo');
 adminForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1677,7 +1712,7 @@ adminForm?.addEventListener('submit', async (e) => {
   }
   if (editingRole === 'supervisor' || editingRole === 'all') {
     patch.supervisorName  = (data.supervisorName  || '').trim();
-    patch.supervisorPhone = (data.supervisorPhone  || '').trim();
+    patch.supervisorPhone = (data.supervisorPhone || '').trim();
   }
 
   try {
@@ -1717,7 +1752,7 @@ qs('#formPayment')?.addEventListener('submit', async (e)=>{
     }
     editingPaymentId = null;
     e.target.reset(); closeModals();
-    await renderPaymentsTable(); await renderDashboard(); await renderReports();
+    await renderPaymentsTable(); await renderDashboard();
   }catch(err){
     console.error(err);
     alert('Kaydedilemedi: ' + (err?.message||'Bilinmeyen hata'));
@@ -1741,7 +1776,7 @@ qs('#formExpense')?.addEventListener('submit', async (e)=>{
     else{ await addExpense(payload); }
     editingExpenseId = null;
     e.target.reset(); closeModals();
-    await renderExpensesTable(); await renderDashboard(); await renderReports();
+    await renderExpensesTable(); await renderDashboard();
   }catch(err){
     console.error(err);
     alert('Kaydedilemedi: ' + (err?.message||'Bilinmeyen hata'));
@@ -1757,6 +1792,27 @@ onAuthStateChanged(auth, async (user)=>{
 
   currentRole = (await fetchRole(currentUser.uid)) ? 'admin' : 'user';
   qsa('.admin-only').forEach(el=> currentRole==='admin'?show(el):hide(el));
+  // Hide export buttons by id for non-admins
+  if(currentRole!=='admin'){
+    ['exportPayments','exportExpenses','payExportCSV','expExportCSV'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(el){
+        el.style.display = 'none';
+        el.setAttribute('aria-disabled','true');
+        el.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); }, { once:true });
+      }
+    });
+    // Generic: hide any button/link that contains CSV or JSON text
+    document.querySelectorAll('button, a').forEach(el=>{
+      const text = (el.textContent||'').toLowerCase();
+      if(text.includes('csv') || text.includes('json')){
+        el.style.display = 'none';
+        el.setAttribute('aria-disabled','true');
+        el.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); }, { once:true });
+      }
+    });
+  }
+
   qs('#userEmail').textContent = currentUser.email || '';
   qs('#userRole').textContent  = currentRole==='admin' ? 'Admin' : 'Kullanıcı';
 
@@ -1772,8 +1828,7 @@ onAuthStateChanged(auth, async (user)=>{
     renderResidentsTable(),
     (async ()=>{ await ensurePaymentsUI(); await renderPaymentsTable(); })(),
     (async ()=>{ await ensureExpensesUI(); await renderExpensesTable(); })(),
-    (async ()=>{ await ensureFeesUI(); await renderFeesTable(); })(),
-    (async ()=>{ await ensureReportsUI(); await renderReports(); })()
+    (async ()=>{ await ensureFeesUI(); await renderFeesTable(); })()
   ]);
 });
 
