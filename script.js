@@ -1,7 +1,7 @@
 /* ==================== Firebase SDK ==================== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserSessionPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
@@ -25,6 +25,40 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 /* ==================== Helpers ==================== */
+/* ==================== Idle Timer ==================== */
+const IDLE_TIMEOUT_MIN = 15; // ⏱️ İnaktif kalınırsa kaç dakika sonra otomatik çıkış
+let _idleTimer = null;
+let _idleDeadline = 0;
+
+function startIdleTimer(){
+  stopIdleTimer();
+  scheduleIdleKick();
+  ['mousemove','mousedown','keydown','scroll','touchstart','visibilitychange'].forEach(ev=>{
+    window.addEventListener(ev, resetIdleTimer, {passive:true});
+  });
+}
+function stopIdleTimer(){
+  if(_idleTimer){ clearTimeout(_idleTimer); _idleTimer=null; }
+  ['mousemove','mousedown','keydown','scroll','touchstart','visibilitychange'].forEach(ev=>{
+    window.removeEventListener(ev, resetIdleTimer, {passive:true});
+  });
+}
+function scheduleIdleKick(){
+  const ms = IDLE_TIMEOUT_MIN*60*1000;
+  _idleDeadline = Date.now()+ms;
+  _idleTimer = setTimeout(async ()=>{
+    try{
+      await signOut(auth);
+      alert('Uzun süre işlem yapılmadı. Güvenlik için yeniden giriş yapın.');
+      show(qs('#loginView')); hide(qs('#appView'));
+    }catch(e){ console.error(e); }
+  }, ms);
+}
+function resetIdleTimer(){
+  if(!currentUser) return;
+  scheduleIdleKick();
+}
+
 const qs  = (s) => document.querySelector(s);
 const qsa = (s) => Array.from(document.querySelectorAll(s));
 const show = (el)=> el && el.classList.remove('hidden');
@@ -153,12 +187,14 @@ loginForm?.addEventListener('submit', async (e)=>{
   try{
     const email = qs('#loginEmail').value.trim();
     const pass  = qs('#loginPassword').value;
+    await setPersistence(auth, browserSessionPersistence);
     await signInWithEmailAndPassword(auth,email,pass);
+    startIdleTimer();
   }catch(err){
     console.error(err); loginError.textContent = err?.message || "Giriş başarısız.";
   }
 });
-qs('#btnLogout')?.addEventListener('click', async ()=>{ try{ await signOut(auth); }catch(e){ console.error(e); }});
+qs('#btnLogout')?.addEventListener('click', async ()=>{ try{ await signOut(auth); stopIdleTimer(); }catch(e){ console.error(e); }});
 
 
 function trToAscii(str){
@@ -1787,6 +1823,7 @@ qs('#formExpense')?.addEventListener('submit', async (e)=>{
 onAuthStateChanged(auth, async (user)=>{
   currentUser = user || null;
   if(!currentUser){
+    stopIdleTimer();
     show(qs('#loginView')); hide(qs('#appView')); hide(qs('#nav')); hide(qs('#userBox')); return;
   }
 
@@ -1817,6 +1854,7 @@ onAuthStateChanged(auth, async (user)=>{
   qs('#userRole').textContent  = currentRole==='admin' ? 'Admin' : 'Kullanıcı';
 
   hide(qs('#loginView')); show(qs('#appView')); show(qs('#nav')); show(qs('#userBox'));
+  startIdleTimer();
   showPage('dashboard');
 
   await ensureAdminInfoDoc();
