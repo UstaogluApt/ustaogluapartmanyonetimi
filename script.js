@@ -1,7 +1,7 @@
 /* ==================== Firebase SDK ==================== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserSessionPersistence
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
@@ -25,40 +25,6 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 /* ==================== Helpers ==================== */
-/* ==================== Idle Timer ==================== */
-const IDLE_TIMEOUT_MIN = 15; // ⏱️ İnaktif kalınırsa kaç dakika sonra otomatik çıkış
-let _idleTimer = null;
-let _idleDeadline = 0;
-
-function startIdleTimer(){
-  stopIdleTimer();
-  scheduleIdleKick();
-  ['mousemove','mousedown','keydown','scroll','touchstart','visibilitychange'].forEach(ev=>{
-    window.addEventListener(ev, resetIdleTimer, {passive:true});
-  });
-}
-function stopIdleTimer(){
-  if(_idleTimer){ clearTimeout(_idleTimer); _idleTimer=null; }
-  ['mousemove','mousedown','keydown','scroll','touchstart','visibilitychange'].forEach(ev=>{
-    window.removeEventListener(ev, resetIdleTimer, {passive:true});
-  });
-}
-function scheduleIdleKick(){
-  const ms = IDLE_TIMEOUT_MIN*60*1000;
-  _idleDeadline = Date.now()+ms;
-  _idleTimer = setTimeout(async ()=>{
-    try{
-      await signOut(auth);
-      alert('Uzun süre işlem yapılmadı. Güvenlik için yeniden giriş yapın.');
-      show(qs('#loginView')); hide(qs('#appView'));
-    }catch(e){ console.error(e); }
-  }, ms);
-}
-function resetIdleTimer(){
-  if(!currentUser) return;
-  scheduleIdleKick();
-}
-
 const qs  = (s) => document.querySelector(s);
 const qsa = (s) => Array.from(document.querySelectorAll(s));
 const show = (el)=> el && el.classList.remove('hidden');
@@ -187,14 +153,12 @@ loginForm?.addEventListener('submit', async (e)=>{
   try{
     const email = qs('#loginEmail').value.trim();
     const pass  = qs('#loginPassword').value;
-    await setPersistence(auth, browserSessionPersistence);
     await signInWithEmailAndPassword(auth,email,pass);
-    startIdleTimer();
   }catch(err){
     console.error(err); loginError.textContent = err?.message || "Giriş başarısız.";
   }
 });
-qs('#btnLogout')?.addEventListener('click', async ()=>{ try{ await signOut(auth); stopIdleTimer(); }catch(e){ console.error(e); }});
+qs('#btnLogout')?.addEventListener('click', async ()=>{ try{ await signOut(auth); }catch(e){ console.error(e); }});
 
 
 function trToAscii(str){
@@ -343,13 +307,13 @@ async function renderReportsTable(){
       const extra = (extraIdx[f] && extraIdx[f][`${year}-${mm}`]) || 0;
       rowDue += due; rowPaid += paid; rowExtra += extra;
 
-      let cls='unpaid', label='Yok';
-      if(paid >= due && due>0) { cls='paid'; label='Tam'; }
-      else if(paid>0 && paid<due){ cls='partial'; label='Kısmi'; }
-      else if(due===0 && paid>0){ cls='partial'; label='Kısmi'; }
-
-      const tip = `Aidat: ${fmtTRY.format(due)}\nÖdeme: ${fmtTRY.format(paid)}\nEk: ${fmtTRY.format(extra)}`;
-      return `<td title="${tip.replace(/"/g,'&quot;')}"><span class="badge ${cls}">${label}</span></td>`;
+      let cls='unpaid', label='x';
+      if(due===0 && paid===0){ cls='undefined'; label='-'; }
+      else if(paid >= due && due>0){ cls='paid'; label='✓'; }
+      else if(paid>0 && paid<due){ cls='partial'; label='o'; }
+      else if(due===0 && paid>0){ cls='partial'; label='o'; }
+const tip = `Aidat: ${fmtTRY.format(due)}\nÖdeme: ${fmtTRY.format(paid)}\nEk: ${fmtTRY.format(extra)}`;
+      return `<td class="aidat-cell ${cls}" title="${tip.replace(/"/g,'&quot;')}"><span class="badge ${cls}">${label}</span></td>`;
     }).join('');
 
     sumDueAll += rowDue; sumPaidAll += rowPaid; sumExtraAll += rowExtra;
@@ -384,12 +348,24 @@ function exportReportsCSV(){
   if(currentRole!=='admin') return;
   const table = qs('#repTbl'); if(!table) return;
   const rows = Array.from(table.querySelectorAll('tr')).map(tr=> Array.from(tr.children).map(td=> trToAscii(td.innerText.trim())));
+  // Normalize status symbols for CSV compatibility
+  const symbolToText = {'✓':'PAID','x':'UNPAID','o':'PARTIAL','-':'NONE'};
+  const normRows = rows.map(r=>{
+    if(Array.isArray(r) && r.length>0){
+      const last = r[r.length-1];
+      const key = (String(last||'').trim()||'');
+      const repl = symbolToText[key] || key;
+      const out = r.slice(); out[out.length-1] = repl; return out;
+    }
+    return r;
+  });
   const sep=','; const bom='\ufeff';
-  const csv = ['sep=,', ...rows.map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(sep))].join('\n');
+  const csv = ['sep=,', ...normRows.map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(sep))].join('\n');
   const blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8;'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
   const y = qs('#repYear')?.value || new Date().getFullYear();
   a.download = `aidat-raporu-${y}.csv`; a.click();
+  return;
 }
 
 
@@ -417,9 +393,13 @@ async function generateFlatAnnualPDF(){
     const paid = (payIdx[flat] && payIdx[flat][`${year}-${mm}`]) || 0;
     const extra = (extraIdx[flat] && extraIdx[flat][`${year}-${mm}`]) || 0;
     totalDue += due; totalPaid += paid; totalExtra += extra;
-    let label='Yok'; if(paid>=due && due>0) label='Tam'; else if(paid>0&&paid<due) label='Kısmi'; else if(due===0&&paid>0) label='Kısmi';
-    body.push([MONTHS_TR[i-1], fmtTRY.format(due), fmtTRY.format(paid), fmtTRY.format(extra), label]);
-  }
+    let statusKey='unpaid', statusSymbol='x', fill='#fee2e2', fontC='#991b1b';
+    if(due===0 && paid===0){ statusKey='undefined'; statusSymbol='-'; fill='#f1f5f9'; fontC='#475569'; }
+    else if(paid>=due && due>0){ statusKey='paid'; statusSymbol='✓'; fill='#dcfce7'; fontC='#166534'; }
+    else if(paid>0 && paid<due){ statusKey='partial'; statusSymbol='o'; fill='#fef9c3'; fontC='#854d0e'; }
+    else if(due===0 && paid>0){ statusKey='partial'; statusSymbol='o'; fill='#fef9c3'; fontC='#854d0e'; }
+    body.push([ MONTHS_TR[i-1], fmtTRY.format(due), fmtTRY.format(paid), fmtTRY.format(extra), {text: statusSymbol, alignment:'center', fillColor: fill, color: fontC, bold:true} ]);
+}
 
   const dd = {
     content: [
@@ -1823,7 +1803,6 @@ qs('#formExpense')?.addEventListener('submit', async (e)=>{
 onAuthStateChanged(auth, async (user)=>{
   currentUser = user || null;
   if(!currentUser){
-    stopIdleTimer();
     show(qs('#loginView')); hide(qs('#appView')); hide(qs('#nav')); hide(qs('#userBox')); return;
   }
 
@@ -1854,7 +1833,6 @@ onAuthStateChanged(auth, async (user)=>{
   qs('#userRole').textContent  = currentRole==='admin' ? 'Admin' : 'Kullanıcı';
 
   hide(qs('#loginView')); show(qs('#appView')); show(qs('#nav')); show(qs('#userBox'));
-  startIdleTimer();
   showPage('dashboard');
 
   await ensureAdminInfoDoc();
@@ -1871,4 +1849,4 @@ onAuthStateChanged(auth, async (user)=>{
 });
 
 /* ==================== Minor ==================== */
-try{ document.getElementById('yearCopy').textContent = new Date().getFullYear(); }catch{}
+try{ (function(){const __el=document.getElementById('yearCopy'); if(__el) __el.textContent=new Date().getFullYear();})() }catch{}

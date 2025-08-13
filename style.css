@@ -107,3 +107,19 @@ input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--border
   .layout{grid-template-columns:1fr}
   .sidebar{position:sticky;top:0;z-index:10;border-bottom-left-radius:0;border-bottom-right-radius:0}
 }
+
+/* ==== Aidat Hücre Arka Planları ==== */
+.aidat-cell{ text-align:center; }
+.aidat-cell.paid{ background:#dcfce7; }
+.aidat-cell.unpaid{ background:#fee2e2; }
+.aidat-cell.partial{ background:#fef9c3; }
+.aidat-cell.undefined{ background:#f1f5f9; }
+
+/* ==== Aidat Durum Rozetleri — Fallback Semboller ==== */
+/* JS herhangi bir sebeple 'Tam/Kısmi/Yok' yazsa bile, semboller gösterilsin */
+.badge.paid, .badge.unpaid, .badge.partial, .badge.undefined{ font-size:0; line-height:1; }
+.badge.paid::after{ content:"✓"; font-size:12px; }
+.badge.unpaid::after{ content:"x"; font-size:12px; }
+.badge.partial::after{ content:"o"; font-size:12px; }
+.badge.undefined::after{ content:"-"; font-size:12px; }
+
