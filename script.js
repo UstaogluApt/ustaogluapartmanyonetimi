@@ -1,13 +1,17 @@
 /* ==================== Firebase SDK ==================== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
   serverTimestamp, updateDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
+// Session flag hygiene: clear manual sign-in flag on fresh navigations (not on reload)
+try{
+  const nav = performance.getEntriesByType('navigation')[0];
+  const navType = nav && nav.type ? nav.type : (performance.navigation && performance.navigation.type===1? 'reload':'navigate');
+  if(navType !== 'reload') sessionStorage.removeItem('manualSignInThisSession');
+}catch{}
 /* ==================== Firebase Config ==================== */
 const firebaseConfig = {
   apiKey: "AIzaSyCrb6EKsuaZunD5aIakwho07Sh_UXAceXc",
@@ -22,6 +26,8 @@ const firebaseConfig = {
 /* ==================== Init ==================== */
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+// Ensure session-only persistence (logout when browser/Tab closes)
+(async()=>{ try{ await setPersistence(auth, browserSessionPersistence); }catch(e){ console.error('setPersistence failed', e); } })();
 const db = getFirestore(app);
 
 /* ==================== Helpers ==================== */
@@ -148,12 +154,14 @@ function enforceExportVisibility(){
 const loginForm  = qs('#loginForm');
 const loginError = qs('#loginError');
 
-loginForm?.addEventListener('submit', async (e)=>{
-  e.preventDefault(); loginError.textContent="";
-  try{
+loginForm?.addEventListener('submit', async (e)=>{ e.preventDefault(); loginError.textContent=""; try{
+    window.__loginInProgress = true;
     const email = qs('#loginEmail').value.trim();
     const pass  = qs('#loginPassword').value;
     await signInWithEmailAndPassword(auth,email,pass);
+    try{ sessionStorage.setItem('manualSignInThisSession','1'); }catch{};
+    window.__loginInProgress = false;
+
   }catch(err){
     console.error(err); loginError.textContent = err?.message || "Giriş başarısız.";
   }
@@ -309,10 +317,11 @@ async function renderReportsTable(){
 
       let cls='unpaid', label='x';
       if(due===0 && paid===0){ cls='undefined'; label='-'; }
-      else if(paid >= due && due>0){ cls='paid'; label='✓'; }
+      if(paid >= due && due>0) { cls='paid'; label='✓'; }
       else if(paid>0 && paid<due){ cls='partial'; label='o'; }
       else if(due===0 && paid>0){ cls='partial'; label='o'; }
-const tip = `Aidat: ${fmtTRY.format(due)}\nÖdeme: ${fmtTRY.format(paid)}\nEk: ${fmtTRY.format(extra)}`;
+
+      const tip = `Aidat: ${fmtTRY.format(due)}\nÖdeme: ${fmtTRY.format(paid)}\nEk: ${fmtTRY.format(extra)}`;
       return `<td class="aidat-cell ${cls}" title="${tip.replace(/"/g,'&quot;')}"><span class="badge ${cls}">${label}</span></td>`;
     }).join('');
 
@@ -348,24 +357,12 @@ function exportReportsCSV(){
   if(currentRole!=='admin') return;
   const table = qs('#repTbl'); if(!table) return;
   const rows = Array.from(table.querySelectorAll('tr')).map(tr=> Array.from(tr.children).map(td=> trToAscii(td.innerText.trim())));
-  // Normalize status symbols for CSV compatibility
-  const symbolToText = {'✓':'PAID','x':'UNPAID','o':'PARTIAL','-':'NONE'};
-  const normRows = rows.map(r=>{
-    if(Array.isArray(r) && r.length>0){
-      const last = r[r.length-1];
-      const key = (String(last||'').trim()||'');
-      const repl = symbolToText[key] || key;
-      const out = r.slice(); out[out.length-1] = repl; return out;
-    }
-    return r;
-  });
   const sep=','; const bom='\ufeff';
-  const csv = ['sep=,', ...normRows.map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(sep))].join('\n');
+  const csv = ['sep=,', ...rows.map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(sep))].join('\n');
   const blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8;'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
   const y = qs('#repYear')?.value || new Date().getFullYear();
   a.download = `aidat-raporu-${y}.csv`; a.click();
-  return;
 }
 
 
@@ -393,13 +390,13 @@ async function generateFlatAnnualPDF(){
     const paid = (payIdx[flat] && payIdx[flat][`${year}-${mm}`]) || 0;
     const extra = (extraIdx[flat] && extraIdx[flat][`${year}-${mm}`]) || 0;
     totalDue += due; totalPaid += paid; totalExtra += extra;
-    let statusKey='unpaid', statusSymbol='x', fill='#fee2e2', fontC='#991b1b';
-    if(due===0 && paid===0){ statusKey='undefined'; statusSymbol='-'; fill='#f1f5f9'; fontC='#475569'; }
-    else if(paid>=due && due>0){ statusKey='paid'; statusSymbol='✓'; fill='#dcfce7'; fontC='#166534'; }
-    else if(paid>0 && paid<due){ statusKey='partial'; statusSymbol='o'; fill='#fef9c3'; fontC='#854d0e'; }
-    else if(due===0 && paid>0){ statusKey='partial'; statusSymbol='o'; fill='#fef9c3'; fontC='#854d0e'; }
-    body.push([ MONTHS_TR[i-1], fmtTRY.format(due), fmtTRY.format(paid), fmtTRY.format(extra), {text: statusSymbol, alignment:'center', fillColor: fill, color: fontC, bold:true} ]);
-}
+    let label='x'; if(paid>=due && due>0) label='✓'; else if(paid>0&&paid<due) label='o'; else if(due===0&&paid>0) label='o';
+    let fill='#fee2e2', fontC='#991b1b';
+    if(label==='✓'){ fill='#dcfce7'; fontC='#166534'; }
+    else if(label==='o'){ fill='#fef9c3'; fontC='#854d0e'; }
+    else if(label==='-'){ fill='#f1f5f9'; fontC='#475569'; }
+    body.push([ MONTHS_TR[i-1], fmtTRY.format(due), fmtTRY.format(paid), fmtTRY.format(extra), {text: label, alignment:'center', fillColor: fill, color: fontC, bold:true} ]);
+  }
 
   const dd = {
     content: [
@@ -1801,6 +1798,9 @@ qs('#formExpense')?.addEventListener('submit', async (e)=>{
 
 /* ==================== Auth State ==================== */
 onAuthStateChanged(auth, async (user)=>{
+  // Force login prompt unless this tab performed a manual sign-in in this session
+  try{ if(user && !sessionStorage.getItem('manualSignInThisSession') && !window.__loginInProgress){ await signOut(auth); return; } }catch{}
+
   currentUser = user || null;
   if(!currentUser){
     show(qs('#loginView')); hide(qs('#appView')); hide(qs('#nav')); hide(qs('#userBox')); return;

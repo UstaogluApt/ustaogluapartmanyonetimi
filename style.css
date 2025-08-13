@@ -108,18 +108,26 @@ input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--border
   .sidebar{position:sticky;top:0;z-index:10;border-bottom-left-radius:0;border-bottom-right-radius:0}
 }
 
+/* ==== Aidat Durum Rozetleri ==== */
+.badge{display:inline-flex;align-items:center;justify-content:center;min-width:28px;padding:4px 8px;border-radius:999px;font-weight:700;border:1px solid var(--border,#e5e7eb);line-height:1}
+.badge.paid{background:#dcfce7;border-color:#bbf7d0;color:#166534}
+.badge.unpaid{background:#fee2e2;border-color:#fecaca;color:#991b1b}
+.badge.partial{background:#fef9c3;border-color:#fde68a;color:#854d0e}
+.badge.undefined{background:#f1f5f9;border-color:#e2e8f0;color:#475569}
+
+/* Fallback: metin yazsa da sembol göster */
+.badge.paid, .badge.unpaid, .badge.partial, .badge.undefined{ font-size:0; line-height:1; }
+.badge.paid::after{ content:"✓"; font-size:12px; }
+.badge.unpaid::after{ content:"x"; font-size:12px; }
+.badge.partial::after{ content:"o"; font-size:12px; }
+.badge.undefined::after{ content:"-"; font-size:12px; }
+
+
+
 /* ==== Aidat Hücre Arka Planları ==== */
 .aidat-cell{ text-align:center; }
 .aidat-cell.paid{ background:#dcfce7; }
 .aidat-cell.unpaid{ background:#fee2e2; }
 .aidat-cell.partial{ background:#fef9c3; }
 .aidat-cell.undefined{ background:#f1f5f9; }
-
-/* ==== Aidat Durum Rozetleri — Fallback Semboller ==== */
-/* JS herhangi bir sebeple 'Tam/Kısmi/Yok' yazsa bile, semboller gösterilsin */
-.badge.paid, .badge.unpaid, .badge.partial, .badge.undefined{ font-size:0; line-height:1; }
-.badge.paid::after{ content:"✓"; font-size:12px; }
-.badge.unpaid::after{ content:"x"; font-size:12px; }
-.badge.partial::after{ content:"o"; font-size:12px; }
-.badge.undefined::after{ content:"-"; font-size:12px; }
 
